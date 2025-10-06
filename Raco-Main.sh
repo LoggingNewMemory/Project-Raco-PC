@@ -163,6 +163,8 @@ performance_basic() {
     else
         cpufreq_max_perf
     fi
+
+    echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 }
 
 balanced_basic() {
@@ -171,6 +173,8 @@ balanced_basic() {
     else
         cpufreq_unlock
     fi
+
+    echo "powersave" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 }
 
 powersave_basic() {
@@ -179,6 +183,8 @@ powersave_basic() {
     else
         cpufreq_min_perf
     fi
+
+    echo "powersave" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 }
 
 
