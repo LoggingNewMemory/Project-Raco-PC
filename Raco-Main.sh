@@ -272,7 +272,7 @@ set_performance() {
     echo "Applying Performance settings..."
 
     enable_boost
-    enable_hwp_dynamic_boost
+    disable_hwp_dynamic_boost
     set_pstate_limits 100 100
     set_epp "performance"
 
@@ -323,7 +323,7 @@ set_powersave() {
     echo "Applying Powersave settings..."
 
     disable_boost
-    disable_hwp_dynamic_boost
+    enable_hwp_dynamic_boost
     
     if [ "$BETTER_POWERSAVE" -eq 1 ]; then
         set_pstate_limits 10 60
