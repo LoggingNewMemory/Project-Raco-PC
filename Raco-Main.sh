@@ -1,155 +1,119 @@
-# INI ADALAH PORT DARI PROJECT RACO
-# BUAT PC / LAPTOP YANG OSNYA LINUX YA
-
-# Jadi ini hal no.1 gw bakal coba ubah freq CPUnya
-
 #!/bin/bash
+
+# ==============================================================================
+# Raco CPU Performance Script - Improved Version
+#
+# This script adjusts CPU performance profiles on Linux systems using
+# a more reliable approach that works with modern CPU governors.
+# It MUST be run with root privileges (e.g., using 'sudo').
+#
+# Usage:
+#   sudo ./Raco-Main.sh 1  (For Performance Mode)
+#   sudo ./Raco-Main.sh 2  (For Balanced Mode)
+#   sudo ./Raco-Main.sh 3  (For Powersave Mode)
+# ==============================================================================
+
 
 ###############################
 # SETTINGS
 ###############################
-# This script is self-contained. Modify the values below directly if needed.
 
 # LITE_MODE:
-# 0 = Use max frequencies in performance modes.
-# 1 = Use mid-range frequencies in performance modes (less aggressive).
+# When set to 1, Performance mode uses schedutil/ondemand governor with
+# max frequency as ceiling, allowing dynamic scaling while prioritizing performance.
+# 0 = Use performance governor (always max frequency if supported).
+# 1 = Use dynamic governor with performance tuning.
 LITE_MODE=0
 
-# BETTER_POWERAVE:
-# 0 = Use the lowest frequencies in powersave mode.
-# 1 = Use mid-range frequencies in powersave mode (better responsiveness).
-BETTER_POWERAVE=0
+# BETTER_POWERSAVE:
+# When set to 1, Powersave mode allows bursting to mid-frequency
+# for better responsiveness while still prioritizing power saving.
+# 0 = Strict powersave with minimal frequency.
+# 1 = Allow bursting to mid-frequency.
+BETTER_POWERSAVE=0
+
+
+##############################
+# SCRIPT INITIALIZATION
+##############################
+
+set -e
+
+# Check for root privileges
+if [ "$(id -u)" -ne 0 ]; then
+    echo "❌ Error: This script must be run as root."
+    echo "Please try again using 'sudo'."
+    exit 1
+fi
 
 
 ##############################
 # HELPER FUNCTIONS
 ##############################
 
-# Securely writes a value to a system file.
-tweak() {
-    if [ -e "$2" ]; then
-        chmod 644 "$2" >/dev/null 2>&1
-        echo "$1" > "$2" 2>/dev/null
-        chmod 444 "$2" >/dev/null 2>&1
+# Securely writes a value to a sysfs file
+write_to_sysfs() {
+    local value="$1"
+    local file="$2"
+    
+    if [ -w "$file" ]; then
+        echo "$value" > "$file" 2>/dev/null || echo "⚠️  Warning: Failed to write to $file"
+    else
+        echo "⚠️  Warning: Cannot write to $file. Skipping."
     fi
 }
 
-# Unsecurely writes a value to a system file (used for unlocking).
-kakangkuh() {
-	[ ! -f "$2" ] && return 1
-	chmod 644 "$2" >/dev/null 2>&1
-	echo "$1" >"$2" 2>/dev/null
+# Gets the middle frequency from available frequencies
+get_mid_freq() {
+    local freqs_file="$1"
+    if [ ! -r "$freqs_file" ]; then echo 0; return; fi
+
+    local freqs=( $(tr ' ' '\n' < "$freqs_file" | sort -n) )
+    local count=${#freqs[@]}
+
+    if [ "$count" -eq 0 ]; then
+        echo 0
+    else
+        local mid_index=$((count / 2))
+        echo "${freqs[$mid_index]}"
+    fi
 }
 
-# Finds the highest frequency from a list.
-which_maxfreq() {
-	tr ' ' '\n' <"$1" | sort -nr | head -n 1
+# Disable CPU boost (Intel Turbo / AMD Precision Boost)
+disable_boost() {
+    # Intel
+    if [ -w /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+        write_to_sysfs "1" /sys/devices/system/cpu/intel_pstate/no_turbo
+    fi
+    
+    # AMD
+    if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
+        write_to_sysfs "0" /sys/devices/system/cpu/cpufreq/boost
+    fi
 }
 
-# Finds the lowest frequency from a list.
-which_minfreq() {
-	tr ' ' '\n' <"$1" | grep -v '^[[:space:]]*$' | sort -n | head -n 1
+# Enable CPU boost
+enable_boost() {
+    # Intel
+    if [ -w /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+        write_to_sysfs "0" /sys/devices/system/cpu/intel_pstate/no_turbo
+    fi
+    
+    # AMD
+    if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
+        write_to_sysfs "1" /sys/devices/system/cpu/cpufreq/boost
+    fi
 }
 
-# Finds the middle frequency from a list.
-which_midfreq() {
-	total_opp=$(wc -w <"$1")
-	mid_opp=$(((total_opp + 1) / 2))
-	tr ' ' '\n' <"$1" | grep -v '^[[:space:]]*$' | sort -nr | head -n $mid_opp | tail -n 1
-}
-
-
-###################################
-# CPU FREQUENCY FUNCTIONS
-###################################
-
-# Locks CPU frequency to max for performance (PPM Driver).
-cpufreq_ppm_max_perf() {
-	cluster=-1
-	for path in /sys/devices/system/cpu/cpufreq/policy*; do
-		((cluster++))
-		cpu_maxfreq=$(<"$path/cpuinfo_max_freq")
-		tweak "$cluster $cpu_maxfreq" /proc/ppm/policy/hard_userlimit_max_cpu_freq
-
-		if [ "$LITE_MODE" -eq 1 ]; then
-			cpu_midfreq=$(which_midfreq "$path/scaling_available_frequencies")
-			tweak "$cluster $cpu_midfreq" /proc/ppm/policy/hard_userlimit_min_cpu_freq
-		else
-			tweak "$cluster $cpu_maxfreq" /proc/ppm/policy/hard_userlimit_min_cpu_freq
-		fi
-	done
-}
-
-# Locks CPU frequency to max for performance (Standard Driver).
-cpufreq_max_perf() {
-	for path in /sys/devices/system/cpu/*/cpufreq; do
-		cpu_maxfreq=$(<"$path/cpuinfo_max_freq")
-		tweak "$cpu_maxfreq" "$path/scaling_max_freq"
-
-		if [ "$LITE_MODE" -eq 1 ]; then
-			cpu_midfreq=$(which_midfreq "$path/scaling_available_frequencies")
-			tweak "$cpu_midfreq" "$path/scaling_min_freq"
-		else
-			tweak "$cpu_maxfreq" "$path/scaling_min_freq"
-		fi
-	done
-	chmod -f 444 /sys/devices/system/cpu/cpufreq/policy*/scaling_*_freq
-}
-
-# Unlocks CPU frequency limits to default (PPM Driver).
-cpufreq_ppm_unlock() {
-	cluster=0
-	for path in /sys/devices/system/cpu/cpufreq/policy*; do
-		cpu_maxfreq=$(<"$path/cpuinfo_max_freq")
-		cpu_minfreq=$(<"$path/cpuinfo_min_freq")
-		kakangkuh "$cluster $cpu_maxfreq" /proc/ppm/policy/hard_userlimit_max_cpu_freq
-		kakangkuh "$cluster $cpu_minfreq" /proc/ppm/policy/hard_userlimit_min_cpu_freq
-		((cluster++))
-	done
-}
-
-# Unlocks CPU frequency limits to default (Standard Driver).
-cpufreq_unlock() {
-	for path in /sys/devices/system/cpu/*/cpufreq; do
-		cpu_maxfreq=$(<"$path/cpuinfo_max_freq")
-		cpu_minfreq=$(<"$path/cpuinfo_min_freq")
-		kakangkuh "$cpu_maxfreq" "$path/scaling_max_freq"
-		kakangkuh "$cpu_minfreq" "$path/scaling_min_freq"
-	done
-	chmod -f 644 /sys/devices/system/cpu/cpufreq/policy*/scaling_*_freq
-}
-
-# Locks CPU frequency to min for powersaving (PPM Driver).
-cpufreq_ppm_min_perf() {
-    cluster=-1
-    for path in /sys/devices/system/cpu/cpufreq/policy*; do
-        ((cluster++))
-        cpu_minfreq=$(<"$path/cpuinfo_min_freq")
-        if [ "$BETTER_POWERAVE" -eq 1 ]; then
-            cpu_midfreq=$(which_midfreq "$path/scaling_available_frequencies")
-            tweak "$cluster $cpu_midfreq" /proc/ppm/policy/hard_userlimit_max_cpu_freq
-            tweak "$cluster $cpu_minfreq" /proc/ppm/policy/hard_userlimit_min_cpu_freq
-        else
-            tweak "$cluster $cpu_minfreq" /proc/ppm/policy/hard_userlimit_max_cpu_freq
-            tweak "$cluster $cpu_minfreq" /proc/ppm/policy/hard_userlimit_min_cpu_freq
+# Set energy performance preference (for intel_pstate)
+set_epp() {
+    local preference="$1"
+    for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
+        local epp_file="$policy_dir/energy_performance_preference"
+        if [ -w "$epp_file" ]; then
+            write_to_sysfs "$preference" "$epp_file"
         fi
     done
-}
-
-# Locks CPU frequency to min for powersaving (Standard Driver).
-cpufreq_min_perf() {
-    for path in /sys/devices/system/cpu/*/cpufreq; do
-        cpu_minfreq=$(<"$path/cpuinfo_min_freq")
-        if [ "$BETTER_POWERAVE" -eq 1 ]; then
-            cpu_midfreq=$(which_midfreq "$path/scaling_available_frequencies")
-            tweak "$cpu_midfreq" "$path/scaling_max_freq"
-            tweak "$cpu_minfreq" "$path/scaling_min_freq"
-        else
-            tweak "$cpu_minfreq" "$path/scaling_max_freq"
-            tweak "$cpu_minfreq" "$path/scaling_min_freq"
-        fi
-    done
-    chmod -f 444 /sys/devices/system/cpu/cpufreq/policy*/scaling_*_freq
 }
 
 
@@ -157,34 +121,81 @@ cpufreq_min_perf() {
 # MODE-SPECIFIC FUNCTIONS
 ##########################################
 
-performance_basic() {
-    if [ -d /proc/ppm ]; then
-        cpufreq_ppm_max_perf
-    else
-        cpufreq_max_perf
-    fi
+set_performance() {
+    echo "Applying Performance settings..."
 
-    echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+    enable_boost
+    set_epp "performance"
+
+    for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
+        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
+        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
+        
+        # Set frequency limits FIRST
+        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
+        
+        if [ "$LITE_MODE" -eq 1 ]; then
+            # Lite mode: Use dynamic governor with high minimum
+            local mid_freq=$(get_mid_freq "$policy_dir/scaling_available_frequencies")
+            [ "$mid_freq" -gt 0 ] && write_to_sysfs "$mid_freq" "$policy_dir/scaling_min_freq"
+            
+            write_to_sysfs "powersave" "$policy_dir/scaling_governor"
+        else
+            # Full performance: Use performance governor
+            write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_min_freq"
+            
+            write_to_sysfs "performance" "$policy_dir/scaling_governor"
+        fi
+    done
 }
 
-balanced_basic() {
-    if [ -d /proc/ppm ]; then
-        cpufreq_ppm_unlock
-    else
-        cpufreq_unlock
-    fi
+set_balanced() {
+    echo "Applying Balanced settings..."
 
-    echo "powersave" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+    enable_boost
+    set_epp "balance_performance"
+
+    for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
+        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
+        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
+
+        # Restore default limits
+        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
+        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
+        
+        # Use powersave governor for balanced mode
+        write_to_sysfs "powersave" "$policy_dir/scaling_governor"
+    done
 }
 
-powersave_basic() {
-    if [ -d /proc/ppm ]; then
-        cpufreq_ppm_min_perf
-    else
-        cpufreq_min_perf
-    fi
+set_powersave() {
+    echo "Applying Powersave settings..."
 
-    echo "powersave" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+    disable_boost
+    set_epp "power"
+
+    for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
+        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
+        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
+        
+        # Set minimum first
+        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
+        
+        if [ "$BETTER_POWERSAVE" -eq 1 ]; then
+            # Better powersave: Allow bursting to mid frequency
+            local mid_freq=$(get_mid_freq "$policy_dir/scaling_available_frequencies")
+            if [ "$mid_freq" -gt 0 ] && [ "$mid_freq" -gt "$cpuinfo_min_freq" ]; then
+                write_to_sysfs "$mid_freq" "$policy_dir/scaling_max_freq"
+            else
+                write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
+            fi
+        else
+            # Strict powersave: Lock to minimum
+            write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
+        fi
+        
+        write_to_sysfs "powersave" "$policy_dir/scaling_governor"
+    done
 }
 
 
@@ -193,9 +204,9 @@ powersave_basic() {
 ##########################################
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 <mode>"
+    echo "Usage: sudo $0 <mode>"
     echo "  1: Performance Mode"
-    echo "  2: Normal (Balanced) Mode"
+    echo "  2: Balanced (Default) Mode"
     echo "  3: Powersave Mode"
     exit 1
 fi
@@ -204,21 +215,33 @@ MODE=$1
 
 case $MODE in
     1)
-        performance_basic
-        echo "Performance mode activated. 🔥"
+        set_performance
+        echo "✅ Performance mode activated. 🔥"
         ;;
     2)
-        balanced_basic
-        echo "Normal (Balanced) mode activated. ⚖️"
+        set_balanced
+        echo "✅ Balanced mode activated. ⚖️"
         ;;
     3)
-        powersave_basic
-        echo "Powersave mode activated. 🔋"
+        set_powersave
+        echo "✅ Powersave mode activated. 🔋"
         ;;
     *)
-        echo "Error: Invalid mode '$MODE'. Please use 1, 2, or 3."
+        echo "❌ Error: Invalid mode '$MODE'. Please use 1, 2, or 3."
         exit 1
         ;;
 esac
+
+echo ""
+echo "Current CPU frequency info:"
+for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
+    if [ -r "$cpu" ]; then
+        cpu_num=$(echo "$cpu" | grep -oP 'cpu\K[0-9]+')
+        freq=$(cat "$cpu")
+        freq_mhz=$((freq / 1000))
+        echo "  CPU$cpu_num: ${freq_mhz} MHz"
+        break  # Just show one as example
+    fi
+done
 
 exit 0
