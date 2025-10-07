@@ -25,13 +25,6 @@
 # 1 = Use dynamic governor with performance tuning.
 LITE_MODE=0
 
-# BETTER_POWERSAVE:
-# When set to 1, Powersave mode allows bursting to mid-frequency
-# for better responsiveness while still prioritizing power saving.
-# 0 = Strict powersave with minimal frequency.
-# 1 = Allow bursting to mid-frequency.
-BETTER_POWERSAVE=0
-
 
 ##############################
 # SCRIPT INITIALIZATION
@@ -60,22 +53,6 @@ write_to_sysfs() {
         echo "$value" > "$file" 2>/dev/null || echo "⚠️  Warning: Failed to write to $file"
     else
         echo "⚠️  Warning: Cannot write to $file. Skipping."
-    fi
-}
-
-# Gets the middle frequency from available frequencies
-get_mid_freq() {
-    local freqs_file="$1"
-    if [ ! -r "$freqs_file" ]; then echo 0; return; fi
-
-    local freqs=( $(tr ' ' '\n' < "$freqs_file" | sort -n) )
-    local count=${#freqs[@]}
-
-    if [ "$count" -eq 0 ]; then
-        echo 0
-    else
-        local mid_index=$((count / 2))
-        echo "${freqs[$mid_index]}"
     fi
 }
 
@@ -117,6 +94,8 @@ set_epp() {
 }
 
 
+
+
 ##########################################
 # MODE-SPECIFIC FUNCTIONS
 ##########################################
@@ -128,22 +107,11 @@ set_performance() {
     set_epp "performance"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
-        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
-        
-        # Set frequency limits FIRST
-        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
-        
         if [ "$LITE_MODE" -eq 1 ]; then
-            # Lite mode: Use dynamic governor with high minimum
-            local mid_freq=$(get_mid_freq "$policy_dir/scaling_available_frequencies")
-            [ "$mid_freq" -gt 0 ] && write_to_sysfs "$mid_freq" "$policy_dir/scaling_min_freq"
-            
+            # Lite mode: Use dynamic governor with performance tuning
             write_to_sysfs "powersave" "$policy_dir/scaling_governor"
         else
             # Full performance: Use performance governor
-            write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_min_freq"
-            
             write_to_sysfs "performance" "$policy_dir/scaling_governor"
         fi
     done
@@ -156,13 +124,6 @@ set_balanced() {
     set_epp "balance_performance"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
-        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
-
-        # Restore default limits
-        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
-        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
-        
         # Use powersave governor for balanced mode
         write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
@@ -175,25 +136,6 @@ set_powersave() {
     set_epp "power"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
-        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
-        
-        # Set minimum first
-        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
-        
-        if [ "$BETTER_POWERSAVE" -eq 1 ]; then
-            # Better powersave: Allow bursting to mid frequency
-            local mid_freq=$(get_mid_freq "$policy_dir/scaling_available_frequencies")
-            if [ "$mid_freq" -gt 0 ] && [ "$mid_freq" -gt "$cpuinfo_min_freq" ]; then
-                write_to_sysfs "$mid_freq" "$policy_dir/scaling_max_freq"
-            else
-                write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
-            fi
-        else
-            # Strict powersave: Lock to minimum
-            write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
-        fi
-        
         write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
 }
