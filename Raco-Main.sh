@@ -260,7 +260,7 @@ set_performance() {
     echo "Applying Performance settings..."
 
     enable_boost
-    enable_hwp_dynamic_boost
+    disable_hwp_dynamic_boost
     set_pstate_limits 100 100
     set_epp "performance"
 
