@@ -26,6 +26,12 @@ LITE_MODE=0
 # 1 = Allow bursting to mid-frequency.
 BETTER_POWERSAVE=0
 
+# GPU_CONTROL:
+# Enable GPU frequency and power management
+# 0 = Skip GPU tweaks
+# 1 = Apply GPU tweaks
+GPU_CONTROL=1
+
 
 ##############################
 # SCRIPT INITIALIZATION
@@ -142,7 +148,124 @@ set_epp() {
 
 
 ##########################################
-# MODE-SPECIFIC FUNCTIONS
+# GPU HELPER FUNCTIONS
+##########################################
+
+# Detect available GPUs
+detect_gpus() {
+    AMD_GPU_FOUND=0
+    INTEL_GPU_FOUND=0
+    
+    # Check for AMD GPU
+    if ls /sys/class/drm/card*/device/power_dpm_force_performance_level &>/dev/null; then
+        AMD_GPU_FOUND=1
+    fi
+    
+    # Check for Intel GPU
+    if ls /sys/class/drm/card*/gt_* &>/dev/null 2>&1 || \
+       [ -d /sys/kernel/debug/dri/0 ]; then
+        INTEL_GPU_FOUND=1
+    fi
+}
+
+# Set AMD GPU performance level
+set_amd_gpu_performance_level() {
+    local level="$1"  # auto, low, high, manual
+    
+    for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
+        if [ -w "$card" ]; then
+            write_to_sysfs "$level" "$card"
+            echo "✓ AMD GPU: Performance level set to $level"
+        fi
+    done
+}
+
+# Set AMD GPU power profile
+set_amd_gpu_power_profile() {
+    local profile="$1"  # 0-7 (typically: 0=bootup, 1=3D, 4=compute, 5=video)
+    
+    for card in /sys/class/drm/card*/device/pp_power_profile_mode; do
+        if [ -w "$card" ]; then
+            write_to_sysfs "$profile" "$card"
+            echo "✓ AMD GPU: Power profile set to $profile"
+        fi
+    done
+}
+
+# Set AMD GPU frequency (manual mode)
+set_amd_gpu_clocks() {
+    local sclk_level="$1"  # GPU core clock level
+    local mclk_level="$2"  # Memory clock level
+    
+    for card_path in /sys/class/drm/card*/device; do
+        if [ -w "$card_path/pp_dpm_sclk" ]; then
+            write_to_sysfs "$sclk_level" "$card_path/pp_dpm_sclk"
+        fi
+        if [ -w "$card_path/pp_dpm_mclk" ]; then
+            write_to_sysfs "$mclk_level" "$card_path/pp_dpm_mclk"
+        fi
+    done
+}
+
+# Set Intel GPU frequency
+set_intel_gpu_freq() {
+    local min_freq="$1"
+    local max_freq="$2"
+    local boost_freq="$3"
+    
+    # Try GT (Graphics Technology) interface first (newer)
+    for gt_dir in /sys/class/drm/card*/gt/gt*; do
+        if [ -d "$gt_dir" ]; then
+            [ -w "$gt_dir/rps_min_freq_mhz" ] && write_to_sysfs "$min_freq" "$gt_dir/rps_min_freq_mhz"
+            [ -w "$gt_dir/rps_max_freq_mhz" ] && write_to_sysfs "$max_freq" "$gt_dir/rps_max_freq_mhz"
+            [ -w "$gt_dir/rps_boost_freq_mhz" ] && write_to_sysfs "$boost_freq" "$gt_dir/rps_boost_freq_mhz"
+            echo "✓ Intel GPU: Frequencies set (min: ${min_freq}MHz, max: ${max_freq}MHz, boost: ${boost_freq}MHz)"
+            return
+        fi
+    done
+    
+    # Fallback to older interface
+    for card in /sys/class/drm/card*/gt_min_freq_mhz; do
+        local card_dir=$(dirname "$card")
+        [ -w "$card" ] && write_to_sysfs "$min_freq" "$card"
+        [ -w "$card_dir/gt_max_freq_mhz" ] && write_to_sysfs "$max_freq" "$card_dir/gt_max_freq_mhz"
+        [ -w "$card_dir/gt_boost_freq_mhz" ] && write_to_sysfs "$boost_freq" "$card_dir/gt_boost_freq_mhz"
+        echo "✓ Intel GPU: Frequencies set (min: ${min_freq}MHz, max: ${max_freq}MHz, boost: ${boost_freq}MHz)"
+    done
+}
+
+# Get Intel GPU min/max frequencies
+get_intel_gpu_freq_range() {
+    # Try GT interface first
+    for gt_dir in /sys/class/drm/card*/gt/gt*; do
+        if [ -r "$gt_dir/rps_min_freq_mhz" ] && [ -r "$gt_dir/rps_max_freq_mhz" ]; then
+            INTEL_GPU_MIN=$(cat "$gt_dir/rps_min_freq_mhz" 2>/dev/null || echo 0)
+            INTEL_GPU_MAX=$(cat "$gt_dir/rps_max_freq_mhz" 2>/dev/null || echo 0)
+            INTEL_GPU_RP0=$(cat "$gt_dir/rps_RP0_freq_mhz" 2>/dev/null || echo "$INTEL_GPU_MAX")
+            INTEL_GPU_RPn=$(cat "$gt_dir/rps_RPn_freq_mhz" 2>/dev/null || echo "$INTEL_GPU_MIN")
+            return
+        fi
+    done
+    
+    # Fallback to older interface
+    for card in /sys/class/drm/card*/gt_min_freq_mhz; do
+        local card_dir=$(dirname "$card")
+        INTEL_GPU_MIN=$(cat "$card" 2>/dev/null || echo 0)
+        INTEL_GPU_MAX=$(cat "$card_dir/gt_max_freq_mhz" 2>/dev/null || echo 0)
+        INTEL_GPU_RP0=$(cat "$card_dir/gt_RP0_freq_mhz" 2>/dev/null || echo "$INTEL_GPU_MAX")
+        INTEL_GPU_RPn=$(cat "$card_dir/gt_RPn_freq_mhz" 2>/dev/null || echo "$INTEL_GPU_MIN")
+        return
+    done
+    
+    INTEL_GPU_MIN=0
+    INTEL_GPU_MAX=0
+    INTEL_GPU_RP0=0
+    INTEL_GPU_RPn=0
+}
+
+
+##########################################
+# MODE-SPECIFIC CPU FUNCTIONS
 ##########################################
 
 set_performance() {
@@ -236,6 +359,71 @@ set_powersave() {
 
 
 ##########################################
+# MODE-SPECIFIC GPU FUNCTIONS
+##########################################
+
+set_gpu_performance() {
+    if [ "$GPU_CONTROL" -eq 0 ]; then return; fi
+    
+    echo ""
+    echo "Applying GPU Performance settings..."
+    
+    if [ "$AMD_GPU_FOUND" -eq 1 ]; then
+        set_amd_gpu_performance_level "high"
+        set_amd_gpu_power_profile "1"  # 3D Full Speed
+    fi
+    
+    if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
+        get_intel_gpu_freq_range
+        if [ "$INTEL_GPU_RP0" -gt 0 ]; then
+            # Set to maximum performance (RP0)
+            set_intel_gpu_freq "$INTEL_GPU_RP0" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"
+        fi
+    fi
+}
+
+set_gpu_balanced() {
+    if [ "$GPU_CONTROL" -eq 0 ]; then return; fi
+    
+    echo ""
+    echo "Applying GPU Balanced settings..."
+    
+    if [ "$AMD_GPU_FOUND" -eq 1 ]; then
+        set_amd_gpu_performance_level "auto"
+        set_amd_gpu_power_profile "0"  # Bootup/Auto
+    fi
+    
+    if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
+        get_intel_gpu_freq_range
+        if [ "$INTEL_GPU_MAX" -gt 0 ]; then
+            # Allow full range, let GPU decide
+            set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"
+        fi
+    fi
+}
+
+set_gpu_powersave() {
+    if [ "$GPU_CONTROL" -eq 0 ]; then return; fi
+    
+    echo ""
+    echo "Applying GPU Powersave settings..."
+    
+    if [ "$AMD_GPU_FOUND" -eq 1 ]; then
+        set_amd_gpu_performance_level "low"
+        set_amd_gpu_power_profile "5"  # Video/Power Saving
+    fi
+    
+    if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
+        get_intel_gpu_freq_range
+        if [ "$INTEL_GPU_RPn" -gt 0 ]; then
+            # Lock to minimum frequency (RPn)
+            set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RPn" "$INTEL_GPU_RPn"
+        fi
+    fi
+}
+
+
+##########################################
 # MAIN EXECUTION LOGIC
 ##########################################
 
@@ -249,17 +437,25 @@ fi
 
 MODE=$1
 
+# Detect available GPUs
+if [ "$GPU_CONTROL" -eq 1 ]; then
+    detect_gpus
+fi
+
 case $MODE in
     1)
         set_performance
+        set_gpu_performance
         echo "✅ Performance mode activated. 🔥"
         ;;
     2)
         set_balanced
+        set_gpu_balanced
         echo "✅ Balanced mode activated. ⚖️"
         ;;
     3)
         set_powersave
+        set_gpu_powersave
         echo "✅ Powersave mode activated. 🔋"
         ;;
     *)
@@ -295,6 +491,50 @@ if [ -r /sys/devices/system/cpu/intel_pstate/min_perf_pct ]; then
 fi
 if [ -r /sys/devices/system/cpu/intel_pstate/max_perf_pct ]; then
     echo "  Max Perf: $(cat /sys/devices/system/cpu/intel_pstate/max_perf_pct)%"
+fi
+
+# Display GPU status
+if [ "$GPU_CONTROL" -eq 1 ]; then
+    echo ""
+    echo "GPU Status:"
+    
+    if [ "$AMD_GPU_FOUND" -eq 1 ]; then
+        echo "  AMD GPU detected:"
+        for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
+            if [ -r "$card" ]; then
+                echo "    Performance Level: $(cat "$card")"
+                break
+            fi
+        done
+    fi
+    
+    if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
+        echo "  Intel GPU detected:"
+        # Try GT interface
+        for gt_dir in /sys/class/drm/card*/gt/gt*; do
+            if [ -r "$gt_dir/rps_cur_freq_mhz" ]; then
+                cur_freq=$(cat "$gt_dir/rps_cur_freq_mhz" 2>/dev/null || echo "N/A")
+                min_freq=$(cat "$gt_dir/rps_min_freq_mhz" 2>/dev/null || echo "N/A")
+                max_freq=$(cat "$gt_dir/rps_max_freq_mhz" 2>/dev/null || echo "N/A")
+                echo "    Current: ${cur_freq} MHz"
+                echo "    Range: ${min_freq} - ${max_freq} MHz"
+                break
+            fi
+        done
+        
+        # Fallback to older interface
+        for card in /sys/class/drm/card*/gt_cur_freq_mhz; do
+            if [ -r "$card" ]; then
+                cur_freq=$(cat "$card" 2>/dev/null || echo "N/A")
+                echo "    Current: ${cur_freq} MHz"
+                break
+            fi
+        done
+    fi
+    
+    if [ "$AMD_GPU_FOUND" -eq 0 ] && [ "$INTEL_GPU_FOUND" -eq 0 ]; then
+        echo "  No supported GPU detected"
+    fi
 fi
 
 exit 0
