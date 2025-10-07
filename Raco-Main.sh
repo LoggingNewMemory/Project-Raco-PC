@@ -157,7 +157,7 @@ detect_gpus() {
     INTEL_GPU_FOUND=0
     
     # Check for AMD GPU
-    if ls /sys/class/drm/card*/device/power_dpm_force_performance_level &>/dev/null; then
+    if ls /sys/class/drm/card*/device/pp_power_profile_mode &>/dev/null; then
         AMD_GPU_FOUND=1
     fi
     
@@ -166,18 +166,6 @@ detect_gpus() {
        [ -d /sys/kernel/debug/dri/0 ]; then
         INTEL_GPU_FOUND=1
     fi
-}
-
-# Set AMD GPU performance level
-set_amd_gpu_performance_level() {
-    local level="$1"  # auto, low, high, manual
-    
-    for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
-        if [ -w "$card" ]; then
-            write_to_sysfs "$level" "$card"
-            echo "✓ AMD GPU: Performance level set to $level"
-        fi
-    done
 }
 
 # Set AMD GPU power profile
@@ -272,7 +260,7 @@ set_performance() {
     echo "Applying Performance settings..."
 
     enable_boost
-    disable_hwp_dynamic_boost
+    enable_hwp_dynamic_boost
     set_pstate_limits 100 100
     set_epp "performance"
 
@@ -323,7 +311,7 @@ set_powersave() {
     echo "Applying Powersave settings..."
 
     disable_boost
-    enable_hwp_dynamic_boost
+    disable_hwp_dynamic_boost
     
     if [ "$BETTER_POWERSAVE" -eq 1 ]; then
         set_pstate_limits 10 60
@@ -369,7 +357,6 @@ set_gpu_performance() {
     echo "Applying GPU Performance settings..."
     
     if [ "$AMD_GPU_FOUND" -eq 1 ]; then
-        set_amd_gpu_performance_level "high"
         set_amd_gpu_power_profile "1"  # 3D Full Speed
     fi
     
@@ -389,7 +376,6 @@ set_gpu_balanced() {
     echo "Applying GPU Balanced settings..."
     
     if [ "$AMD_GPU_FOUND" -eq 1 ]; then
-        set_amd_gpu_performance_level "auto"
         set_amd_gpu_power_profile "0"  # Bootup/Auto
     fi
     
@@ -409,7 +395,6 @@ set_gpu_powersave() {
     echo "Applying GPU Powersave settings..."
     
     if [ "$AMD_GPU_FOUND" -eq 1 ]; then
-        set_amd_gpu_performance_level "low"
         set_amd_gpu_power_profile "5"  # Video/Power Saving
     fi
     
@@ -500,9 +485,9 @@ if [ "$GPU_CONTROL" -eq 1 ]; then
     
     if [ "$AMD_GPU_FOUND" -eq 1 ]; then
         echo "  AMD GPU detected:"
-        for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
+        for card in /sys/class/drm/card*/device/pp_power_profile_mode; do
             if [ -r "$card" ]; then
-                echo "    Performance Level: $(cat "$card")"
+                echo "    Current Power Profile: $(grep '\*' "$card")"
                 break
             fi
         done
