@@ -87,12 +87,54 @@ enable_boost() {
     fi
 }
 
+# Enable HWP Dynamic Boost (if available)
+enable_hwp_dynamic_boost() {
+    if [ -w /sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost ]; then
+        write_to_sysfs "1" /sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost
+        echo "✓ HWP Dynamic Boost enabled"
+    fi
+}
+
+# Disable HWP Dynamic Boost
+disable_hwp_dynamic_boost() {
+    if [ -w /sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost ]; then
+        write_to_sysfs "0" /sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost
+        echo "✓ HWP Dynamic Boost disabled"
+    fi
+}
+
+# Set Intel P-State performance percentage limits
+set_pstate_limits() {
+    local min_perf="$1"
+    local max_perf="$2"
+    
+    if [ -w /sys/devices/system/cpu/intel_pstate/min_perf_pct ]; then
+        write_to_sysfs "$min_perf" /sys/devices/system/cpu/intel_pstate/min_perf_pct
+        echo "✓ Min performance: ${min_perf}%"
+    fi
+    
+    if [ -w /sys/devices/system/cpu/intel_pstate/max_perf_pct ]; then
+        write_to_sysfs "$max_perf" /sys/devices/system/cpu/intel_pstate/max_perf_pct
+        echo "✓ Max performance: ${max_perf}%"
+    fi
+}
+
 # Set energy performance preference (for intel_pstate)
+# EPP can only be set when using powersave governor
 set_epp() {
     local preference="$1"
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
         local epp_file="$policy_dir/energy_performance_preference"
-        if [ -w "$epp_file" ]; then
+        local gov_file="$policy_dir/scaling_governor"
+        
+        if [ -w "$epp_file" ] && [ -r "$gov_file" ]; then
+            local current_gov=$(<"$gov_file")
+            
+            # EPP only works with powersave governor
+            if [ "$current_gov" != "powersave" ]; then
+                write_to_sysfs "powersave" "$gov_file"
+            fi
+            
             write_to_sysfs "$preference" "$epp_file"
         fi
     done
@@ -107,6 +149,8 @@ set_performance() {
     echo "Applying Performance settings..."
 
     enable_boost
+    enable_hwp_dynamic_boost
+    set_pstate_limits 100 100
     set_epp "performance"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
@@ -135,6 +179,8 @@ set_balanced() {
     echo "Applying Balanced settings..."
 
     enable_boost
+    enable_hwp_dynamic_boost
+    set_pstate_limits 20 100
     set_epp "balance_performance"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
@@ -154,6 +200,14 @@ set_powersave() {
     echo "Applying Powersave settings..."
 
     disable_boost
+    disable_hwp_dynamic_boost
+    
+    if [ "$BETTER_POWERSAVE" -eq 1 ]; then
+        set_pstate_limits 10 60
+    else
+        set_pstate_limits 10 30
+    fi
+    
     set_epp "power"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
@@ -225,5 +279,22 @@ for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
         break  # Just show one as example
     fi
 done
+
+# Display Intel P-State status
+echo ""
+echo "Intel P-State status:"
+if [ -r /sys/devices/system/cpu/intel_pstate/status ]; then
+    echo "  Status: $(cat /sys/devices/system/cpu/intel_pstate/status)"
+fi
+if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+    turbo_status=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo)
+    [ "$turbo_status" -eq 0 ] && echo "  Turbo: Enabled" || echo "  Turbo: Disabled"
+fi
+if [ -r /sys/devices/system/cpu/intel_pstate/min_perf_pct ]; then
+    echo "  Min Perf: $(cat /sys/devices/system/cpu/intel_pstate/min_perf_pct)%"
+fi
+if [ -r /sys/devices/system/cpu/intel_pstate/max_perf_pct ]; then
+    echo "  Max Perf: $(cat /sys/devices/system/cpu/intel_pstate/max_perf_pct)%"
+fi
 
 exit 0
