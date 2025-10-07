@@ -1,12 +1,6 @@
 #!/bin/bash
 
 # ==============================================================================
-# Raco CPU Performance Script - Improved Version
-#
-# This script adjusts CPU performance profiles on Linux systems using
-# a more reliable approach that works with modern CPU governors.
-# It MUST be run with root privileges (e.g., using 'sudo').
-#
 # Usage:
 #   sudo ./Raco-Main.sh 1  (For Performance Mode)
 #   sudo ./Raco-Main.sh 2  (For Balanced Mode)
@@ -79,29 +73,17 @@ get_mid_freq() {
     fi
 }
 
-# Disable CPU boost (Intel Turbo / AMD Precision Boost)
+# Disable Intel Turbo Boost
 disable_boost() {
-    # Intel
     if [ -w /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
         write_to_sysfs "1" /sys/devices/system/cpu/intel_pstate/no_turbo
     fi
-    
-    # AMD
-    if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
-        write_to_sysfs "0" /sys/devices/system/cpu/cpufreq/boost
-    fi
 }
 
-# Enable CPU boost
+# Enable Intel Turbo Boost
 enable_boost() {
-    # Intel
     if [ -w /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
         write_to_sysfs "0" /sys/devices/system/cpu/intel_pstate/no_turbo
-    fi
-    
-    # AMD
-    if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
-        write_to_sysfs "1" /sys/devices/system/cpu/cpufreq/boost
     fi
 }
 
