@@ -84,6 +84,70 @@ set_pstate_limits() {
     fi
 }
 
+# Set CPU frequency limits via generic cpufreq interface
+set_cpufreq_limits() {
+    local mode="$1" # "performance", "balanced", or "powersave"
+
+    local limits_set=0
+    for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
+        # Check if the required files exist and are accessible
+        if [ ! -r "$policy_dir/cpuinfo_max_freq" ] || \
+           [ ! -r "$policy_dir/cpuinfo_min_freq" ] || \
+           [ ! -w "$policy_dir/scaling_max_freq" ] || \
+           [ ! -w "$policy_dir/scaling_min_freq" ]; then
+            continue
+        fi
+
+        local max_freq=$(cat "$policy_dir/cpuinfo_max_freq")
+        local min_freq=$(cat "$policy_dir/cpuinfo_min_freq")
+        
+        local target_min="$min_freq"
+        local target_max="$max_freq"
+
+        case "$mode" in
+            "performance")
+                # For performance, lock the frequency to the maximum available
+                target_min="$max_freq"
+                target_max="$max_freq"
+                ;;
+            "balanced")
+                # For balanced, allow the kernel the full frequency range
+                target_min="$min_freq"
+                target_max="$max_freq"
+                ;;
+            "powersave")
+                # For powersave, cap the maximum frequency to 30% (similar to P-State)
+                target_min="$min_freq"
+                target_max=$((max_freq * 30 / 100))
+                # Ensure the calculated max isn't below the absolute minimum
+                if [ "$target_max" -lt "$min_freq" ]; then
+                    target_max="$min_freq"
+                fi
+                ;;
+        esac
+
+        # The order matters: set max first, then min
+        write_to_sysfs "$target_max" "$policy_dir/scaling_max_freq"
+        write_to_sysfs "$target_min" "$policy_dir/scaling_min_freq"
+        limits_set=1
+    done
+    
+    [ "$limits_set" -eq 1 ] && echo "✓ CPU Freq limits configured for '$mode' mode."
+}
+
+# Sets the Energy Performance Preference (EPP)
+set_epp() {
+    local preference="$1"
+    local epp_set=0
+    for epp_file in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+        if [ -w "$epp_file" ]; then
+            write_to_sysfs "$preference" "$epp_file"
+            epp_set=1
+        fi
+    done
+    [ "$epp_set" -eq 1 ] && echo "✓ Energy Performance Preference set to '$preference'"
+}
+
 
 ##########################################
 # GPU HELPER FUNCTIONS
@@ -287,14 +351,16 @@ set_performance() {
         echo "✓ Platform profile set to performance"
     fi
 
-    enable_boost
-    disable_hwp_dynamic_boost
-    set_pstate_limits 100 100
-
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
         [ -w "$policy_dir/scaling_governor" ] && write_to_sysfs "performance" "$policy_dir/scaling_governor"
     done
     echo "✓ CPU Scaling Governor set to performance"
+
+    enable_boost
+    disable_hwp_dynamic_boost
+    set_epp "performance"
+    set_pstate_limits 100 100
+    set_cpufreq_limits "performance"
     
     echo ""
     echo "Applying Kernel & I/O tweaks for Performance..."
@@ -312,15 +378,17 @@ set_balanced() {
         write_to_sysfs "balanced" /sys/firmware/acpi/platform_profile
         echo "✓ Platform profile set to balanced"
     fi
- 
-    enable_boost
-    enable_hwp_dynamic_boost
-    set_pstate_limits 20 100
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
         [ -w "$policy_dir/scaling_governor" ] && write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
     echo "✓ CPU Scaling Governor set to powersave"
+ 
+    enable_boost
+    enable_hwp_dynamic_boost
+    set_epp "balance_performance"
+    set_pstate_limits 20 100
+    set_cpufreq_limits "balanced"
     
     echo ""
     echo "Applying Kernel & I/O tweaks for Balanced..."
@@ -344,15 +412,17 @@ set_powersave() {
             echo "✓ Platform profile set to balanced (best available for powersave)"
         fi
     fi
-    
-    disable_boost
-    disable_hwp_dynamic_boost
-    set_pstate_limits 10 30
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
         [ -w "$policy_dir/scaling_governor" ] && write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
     echo "✓ CPU Scaling Governor set to powersave"
+    
+    disable_boost
+    disable_hwp_dynamic_boost
+    set_epp "power"
+    set_pstate_limits 10 30
+    set_cpufreq_limits "powersave"
     
     echo ""
     echo "Applying Kernel & I/O tweaks for Powersave..."
@@ -458,15 +528,16 @@ esac
 
 echo ""
 echo "Current CPU frequency info:"
-for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
-    if [ -r "$cpu" ]; then
-        cpu_num=$(echo "$cpu" | grep -oP 'cpu\K[0-9]+')
-        freq=$(cat "$cpu")
-        freq_mhz=$((freq / 1000))
-        gov_file="/sys/devices/system/cpu/cpu${cpu_num}/cpufreq/scaling_governor"
-        governor=$(cat "$gov_file" 2>/dev/null || echo "N/A")
-        echo "  CPU$cpu_num: ${freq_mhz} MHz (Governor: $governor)"
-        break  # Just show one as example
+for cpu_dir in /sys/devices/system/cpu/cpu*/cpufreq; do
+    if [ -r "$cpu_dir/scaling_cur_freq" ]; then
+        cpu_num=$(basename "$(dirname "$cpu_dir")" | sed 's/cpu//')
+        cur_freq=$(($(cat "$cpu_dir/scaling_cur_freq") / 1000))
+        governor=$(cat "$cpu_dir/scaling_governor" 2>/dev/null || echo "N/A")
+        min_freq=$(($(cat "$cpu_dir/scaling_min_freq") / 1000))
+        max_freq=$(($(cat "$cpu_dir/scaling_max_freq") / 1000))
+        
+        echo "  CPU$cpu_num: ${cur_freq} MHz (Governor: $governor, Range: ${min_freq}-${max_freq} MHz)"
+        break # Just show one as an example
     fi
 done
 
@@ -486,6 +557,10 @@ fi
 if [ -r /sys/devices/system/cpu/intel_pstate/max_perf_pct ]; then
     echo "  Max Perf: $(cat /sys/devices/system/cpu/intel_pstate/max_perf_pct)%"
 fi
+if [ -r /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference ]; then
+    echo "  EPP: $(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference)"
+fi
+
 
 # Display GPU status
 echo ""
