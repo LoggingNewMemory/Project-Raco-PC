@@ -26,33 +26,29 @@ fi
 # HELPER FUNCTIONS
 ##############################
 
-# Securely writes a value to a sysfs file
+# Securely writes a value to a sysfs or procfs file
 write_to_sysfs() {
     local value="$1"
     local file="$2"
     
     if [ -w "$file" ]; then
-        echo "$value" > "$file" 2>/dev/null || echo "⚠️  Warning: Failed to write to $file"
+        echo "$value" > "$file" 2>/dev/null || echo "⚠️  Warning: Failed to write '$value' to $file"
     else
         echo "⚠️  Warning: Cannot write to $file. Skipping."
     fi
 }
 
-# Gets the middle frequency from available frequencies
-get_mid_freq() {
-    local freqs_file="$1"
-    if [ ! -r "$freqs_file" ]; then echo 0; return; fi
-
-    local freqs=( $(tr ' ' '\n' < "$freqs_file" | sort -n) )
-    local count=${#freqs[@]}
-
-    if [ "$count" -eq 0 ]; then
-        echo 0
-    else
-        local mid_index=$((count / 2))
-        echo "${freqs[$mid_index]}"
-    fi
+# Wrapper for sysctl
+set_sysctl() {
+    local key="$1"
+    local value="$2"
+    sysctl -w "${key}=${value}" >/dev/null 2>&1 || echo "⚠️  Warning: Failed to set sysctl ${key}=${value}"
 }
+
+
+##########################################
+# CPU HELPER FUNCTIONS
+##########################################
 
 # Disable Intel Turbo Boost
 disable_boost() {
@@ -145,27 +141,11 @@ detect_gpus() {
 
 # Set AMD GPU power profile
 set_amd_gpu_power_profile() {
-    local profile="$1"  # 0-7 (typically: 0=bootup, 1=3D, 4=compute, 5=video)
-    
+    local profile="$1"
     for card in /sys/class/drm/card*/device/pp_power_profile_mode; do
         if [ -w "$card" ]; then
             write_to_sysfs "$profile" "$card"
             echo "✓ AMD GPU: Power profile set to $profile"
-        fi
-    done
-}
-
-# Set AMD GPU frequency (manual mode)
-set_amd_gpu_clocks() {
-    local sclk_level="$1"  # GPU core clock level
-    local mclk_level="$2"  # Memory clock level
-    
-    for card_path in /sys/class/drm/card*/device; do
-        if [ -w "$card_path/pp_dpm_sclk" ]; then
-            write_to_sysfs "$sclk_level" "$card_path/pp_dpm_sclk"
-        fi
-        if [ -w "$card_path/pp_dpm_mclk" ]; then
-            write_to_sysfs "$mclk_level" "$card_path/pp_dpm_mclk"
         fi
     done
 }
@@ -220,137 +200,169 @@ get_intel_gpu_freq_range() {
         return
     done
     
-    INTEL_GPU_MIN=0
-    INTEL_GPU_MAX=0
-    INTEL_GPU_RP0=0
-    INTEL_GPU_RPn=0
+    INTEL_GPU_MIN=0 INTEL_GPU_MAX=0 INTEL_GPU_RP0=0 INTEL_GPU_RPn=0
 }
 
 
 ##########################################
-# MODE-SPECIFIC CPU FUNCTIONS
+# SYSTEM TWEAKS HELPER FUNCTIONS
+##########################################
+
+# Set I/O scheduler for block devices
+set_io_scheduler() {
+    local scheduler="$1"
+    for dev_path in /sys/block/[sv]d* /sys/block/nvme*; do
+        if [ -d "$dev_path" ]; then
+            write_to_sysfs "$scheduler" "$dev_path/queue/scheduler"
+        fi
+    done
+    echo "✓ I/O Scheduler set to: $scheduler"
+}
+
+# Set SATA Aggressive Link Power Management (ALPM)
+set_sata_alpm() {
+    local mode="$1" # min_power, medium_power, max_performance
+    for host in /sys/class/scsi_host/host*/link_power_management_policy; do
+        write_to_sysfs "$mode" "$host"
+    done
+    echo "✓ SATA ALPM set to: $mode"
+}
+
+# Set USB autosuspend
+set_usb_autosuspend() {
+    local mode="$1" # "on" or "auto"
+    for dev in /sys/bus/usb/devices/*/power/control; do
+        write_to_sysfs "$mode" "$dev"
+    done
+    echo "✓ USB Autosuspend control set to: $mode"
+}
+
+# Set Audio codec power saving
+set_audio_powersave() {
+    local value="$1" # 0=off, 1=on
+    write_to_sysfs "$value" "/sys/module/snd_hda_intel/parameters/power_save"
+    echo "✓ Audio codec power saving set to: $value"
+}
+
+# Set Kernel Samepage Merging (KSM)
+set_ksm() {
+    local value="$1" # 0=off, 1=on
+    write_to_sysfs "$value" "/sys/kernel/mm/ksm/run"
+    echo "✓ Kernel Samepage Merging (KSM) set to: $value"
+}
+
+# Set Transparent Huge Pages (THP)
+set_thp() {
+    local mode="$1" # always, madvise, never
+    write_to_sysfs "$mode" "/sys/kernel/mm/transparent_hugepage/enabled"
+    echo "✓ Transparent Huge Pages (THP) set to: $mode"
+}
+
+
+##########################################
+# MODE-SPECIFIC FUNCTIONS
 ##########################################
 
 set_performance() {
     echo "Applying Performance settings..."
-
+    # --- CPU ---
     enable_boost
     disable_hwp_dynamic_boost
     set_pstate_limits 100 100
     set_epp "performance"
-
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
-        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
-        
-        # Set frequency limits FIRST
-        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
-        
-        # Full performance: Use performance governor
-        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_min_freq"
-        
+        write_to_sysfs "$(<"$policy_dir/cpuinfo_max_freq")" "$policy_dir/scaling_max_freq"
+        write_to_sysfs "$(<"$policy_dir/cpuinfo_max_freq")" "$policy_dir/scaling_min_freq"
         write_to_sysfs "performance" "$policy_dir/scaling_governor"
     done
+    
+    # --- System Tweaks ---
+    set_io_scheduler "none"
+    set_sysctl "vm.swappiness" "10"
+    set_sysctl "vm.vfs_cache_pressure" "50"
+    set_sata_alpm "max_performance"
+    set_usb_autosuspend "on"
+    set_audio_powersave "0"
+    set_ksm "0"
+    set_thp "madvise"
 }
 
 set_balanced() {
     echo "Applying Balanced settings..."
-
+    # --- CPU ---
     enable_boost
     enable_hwp_dynamic_boost
     set_pstate_limits 20 100
     set_epp "balance_performance"
-
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
-        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
-
-        # Restore default limits
-        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
-        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
-        
-        # Use powersave governor for balanced mode
+        write_to_sysfs "$(<"$policy_dir/cpuinfo_max_freq")" "$policy_dir/scaling_max_freq"
+        write_to_sysfs "$(<"$policy_dir/cpuinfo_min_freq")" "$policy_dir/scaling_min_freq"
         write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
+
+    # --- System Tweaks ---
+    set_io_scheduler "bfq"
+    set_sysctl "vm.swappiness" "60" # Default value
+    set_sysctl "vm.vfs_cache_pressure" "100" # Default value
+    set_sata_alpm "medium_power"
+    set_usb_autosuspend "auto"
+    set_audio_powersave "1"
+    set_ksm "0"
+    set_thp "madvise"
 }
 
 set_powersave() {
     echo "Applying Powersave settings..."
-
+    # --- CPU ---
     disable_boost
     disable_hwp_dynamic_boost
-    
     set_pstate_limits 10 30
-    
     set_epp "power"
-
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
-        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
-        
-        # Set minimum first
-        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
-        
-        # Strict powersave: Lock to minimum
-        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
-        
+        local min_freq=$(<"$policy_dir/cpuinfo_min_freq")
+        write_to_sysfs "$min_freq" "$policy_dir/scaling_min_freq"
+        write_to_sysfs "$min_freq" "$policy_dir/scaling_max_freq"
         write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
+    
+    # --- System Tweaks ---
+    set_io_scheduler "bfq"
+    set_sysctl "vm.swappiness" "80"
+    set_sysctl "vm.vfs_cache_pressure" "200"
+    set_sata_alpm "min_power"
+    set_usb_autosuspend "auto"
+    set_audio_powersave "1"
+    set_ksm "1"
+    set_thp "never"
 }
-
-
-##########################################
-# MODE-SPECIFIC GPU FUNCTIONS
-##########################################
 
 set_gpu_performance() {
     echo ""
     echo "Applying GPU Performance settings..."
-    
-    if [ "$AMD_GPU_FOUND" -eq 1 ]; then
-        set_amd_gpu_power_profile "1"  # 3D Full Speed
-    fi
-    
+    if [ "$AMD_GPU_FOUND" -eq 1 ]; then set_amd_gpu_power_profile "1"; fi
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         get_intel_gpu_freq_range
-        if [ "$INTEL_GPU_RP0" -gt 0 ]; then
-            # Set to maximum performance (RP0)
-            set_intel_gpu_freq "$INTEL_GPU_RP0" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"
-        fi
+        if [ "$INTEL_GPU_RP0" -gt 0 ]; then set_intel_gpu_freq "$INTEL_GPU_RP0" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"; fi
     fi
 }
 
 set_gpu_balanced() {
     echo ""
     echo "Applying GPU Balanced settings..."
-    
-    if [ "$AMD_GPU_FOUND" -eq 1 ]; then
-        set_amd_gpu_power_profile "0"  # Bootup/Auto
-    fi
-    
+    if [ "$AMD_GPU_FOUND" -eq 1 ]; then set_amd_gpu_power_profile "0"; fi
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         get_intel_gpu_freq_range
-        if [ "$INTEL_GPU_MAX" -gt 0 ]; then
-            # Allow full range, let GPU decide
-            set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"
-        fi
+        if [ "$INTEL_GPU_MAX" -gt 0 ]; then set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"; fi
     fi
 }
 
 set_gpu_powersave() {
     echo ""
     echo "Applying GPU Powersave settings..."
-    
-    if [ "$AMD_GPU_FOUND" -eq 1 ]; then
-        set_amd_gpu_power_profile "5"  # Video/Power Saving
-    fi
-    
+    if [ "$AMD_GPU_FOUND" -eq 1 ]; then set_amd_gpu_power_profile "5"; fi
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         get_intel_gpu_freq_range
-        if [ "$INTEL_GPU_RPn" -gt 0 ]; then
-            # Lock to minimum frequency (RPn)
-            set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RPn" "$INTEL_GPU_RPn"
-        fi
+        if [ "$INTEL_GPU_RPn" -gt 0 ]; then set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RPn" "$INTEL_GPU_RPn"; fi
     fi
 }
 
@@ -368,8 +380,6 @@ if [ -z "$1" ]; then
 fi
 
 MODE=$1
-
-# Detect available GPUs
 detect_gpus
 
 case $MODE in
@@ -395,74 +405,74 @@ case $MODE in
 esac
 
 echo ""
-echo "Current CPU frequency info:"
-for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
+echo "--------------------------------"
+echo "        CURRENT STATUS"
+echo "--------------------------------"
+
+# Display CPU status
+echo ""
+echo "CPU Frequency & Governor:"
+for cpu in /sys/devices/system/cpu/cpu0/cpufreq/*; do
     if [ -r "$cpu" ]; then
-        cpu_num=$(echo "$cpu" | grep -oP 'cpu\K[0-9]+')
-        freq=$(cat "$cpu")
-        freq_mhz=$((freq / 1000))
-        echo "  CPU$cpu_num: ${freq_mhz} MHz"
-        break  # Just show one as example
+        name=$(basename "$cpu")
+        value=$(cat "$cpu")
+        if [[ $name == *"freq" ]]; then value=$((value/1000))" MHz"; fi
+        printf "  %-22s: %s\n" "$name" "$value"
     fi
 done
 
 # Display Intel P-State status
 echo ""
 echo "Intel P-State status:"
-if [ -r /sys/devices/system/cpu/intel_pstate/status ]; then
-    echo "  Status: $(cat /sys/devices/system/cpu/intel_pstate/status)"
+if [ -d /sys/devices/system/cpu/intel_pstate ]; then
+    [ -r /sys/devices/system/cpu/intel_pstate/status ] && echo "  Status: $(cat /sys/devices/system/cpu/intel_pstate/status)"
+    if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+        [ "$(cat /sys/devices/system/cpu/intel_pstate/no_turbo)" -eq 0 ] && echo "  Turbo: Enabled" || echo "  Turbo: Disabled"
+    fi
+    [ -r /sys/devices/system/cpu/intel_pstate/min_perf_pct ] && echo "  Min Perf: $(cat /sys/devices/system/cpu/intel_pstate/min_perf_pct)%"
+    [ -r /sys/devices/system/cpu/intel_pstate/max_perf_pct ] && echo "  Max Perf: $(cat /sys/devices/system/cpu/intel_pstate/max_perf_pct)%"
+else
+    echo "  Intel P-State driver not active."
 fi
-if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
-    turbo_status=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo)
-    [ "$turbo_status" -eq 0 ] && echo "  Turbo: Enabled" || echo "  Turbo: Disabled"
-fi
-if [ -r /sys/devices/system/cpu/intel_pstate/min_perf_pct ]; then
-    echo "  Min Perf: $(cat /sys/devices/system/cpu/intel_pstate/min_perf_pct)%"
-fi
-if [ -r /sys/devices/system/cpu/intel_pstate/max_perf_pct ]; then
-    echo "  Max Perf: $(cat /sys/devices/system/cpu/intel_pstate/max_perf_pct)%"
-fi
+
 
 # Display GPU status
 echo ""
 echo "GPU Status:"
-
 if [ "$AMD_GPU_FOUND" -eq 1 ]; then
     echo "  AMD GPU detected:"
-    for card in /sys/class/drm/card*/device/pp_power_profile_mode; do
-        if [ -r "$card" ]; then
-            echo "    Current Power Profile: $(grep '\*' "$card")"
-            break
-        fi
-    done
+    for card in /sys/class/drm/card*/device/pp_power_profile_mode; do [ -r "$card" ] && echo "    Current Power Profile: $(grep '\*' "$card")" && break; done
 fi
-
 if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
     echo "  Intel GPU detected:"
-    # Try GT interface
     for gt_dir in /sys/class/drm/card*/gt/gt*; do
         if [ -r "$gt_dir/rps_cur_freq_mhz" ]; then
-            cur_freq=$(cat "$gt_dir/rps_cur_freq_mhz" 2>/dev/null || echo "N/A")
-            min_freq=$(cat "$gt_dir/rps_min_freq_mhz" 2>/dev/null || echo "N/A")
-            max_freq=$(cat "$gt_dir/rps_max_freq_mhz" 2>/dev/null || echo "N/A")
-            echo "    Current: ${cur_freq} MHz"
-            echo "    Range: ${min_freq} - ${max_freq} MHz"
-            break
-        fi
-    done
-    
-    # Fallback to older interface
-    for card in /sys/class/drm/card*/gt_cur_freq_mhz; do
-        if [ -r "$card" ]; then
-            cur_freq=$(cat "$card" 2>/dev/null || echo "N/A")
-            echo "    Current: ${cur_freq} MHz"
+            printf "    Current: %s MHz,  Min: %s MHz,  Max: %s MHz\n" \
+                "$(cat "$gt_dir/rps_cur_freq_mhz" 2>/dev/null || echo N/A)" \
+                "$(cat "$gt_dir/rps_min_freq_mhz" 2>/dev/null || echo N/A)" \
+                "$(cat "$gt_dir/rps_max_freq_mhz" 2>/dev/null || echo N/A)"
             break
         fi
     done
 fi
+if [ "$AMD_GPU_FOUND" -eq 0 ] && [ "$INTEL_GPU_FOUND" -eq 0 ]; then echo "  No supported GPU detected"; fi
 
-if [ "$AMD_GPU_FOUND" -eq 0 ] && [ "$INTEL_GPU_FOUND" -eq 0 ]; then
-    echo "  No supported GPU detected"
-fi
+
+# Display System Tweaks Status
+echo ""
+echo "System Tweaks Status:"
+# I/O Scheduler (checking sda as a representative device)
+if [ -r /sys/block/sda/queue/scheduler ]; then echo "  I/O Scheduler (sda): $(cat /sys/block/sda/queue/scheduler)"; fi
+# VM settings
+echo "  Swappiness: $(sysctl -n vm.swappiness)"
+echo "  VFS Cache Pressure: $(sysctl -n vm.vfs_cache_pressure)"
+# SATA ALPM (checking host0)
+if [ -r /sys/class/scsi_host/host0/link_power_management_policy ]; then echo "  SATA ALPM (host0): $(cat /sys/class/scsi_host/host0/link_power_management_policy)"; fi
+# Audio Power Save
+if [ -r /sys/module/snd_hda_intel/parameters/power_save ]; then echo "  Audio Power Save: $(cat /sys/module/snd_hda_intel/parameters/power_save)"; fi
+# KSM & THP
+if [ -r /sys/kernel/mm/ksm/run ]; then echo "  KSM Enabled: $(cat /sys/kernel/mm/ksm/run)"; fi
+if [ -r /sys/kernel/mm/transparent_hugepage/enabled ]; then echo "  THP Mode: $(cat /sys/kernel/mm/transparent_hugepage/enabled)"; fi
+
 
 exit 0
