@@ -38,13 +38,6 @@ write_to_sysfs() {
     fi
 }
 
-# Wrapper for sysctl
-set_sysctl() {
-    local key="$1"
-    local value="$2"
-    sysctl -w "${key}=${value}" >/dev/null 2>&1 || echo "⚠️  Warning: Failed to set sysctl ${key}=${value}"
-}
-
 
 ##########################################
 # CPU HELPER FUNCTIONS
@@ -278,8 +271,6 @@ set_performance() {
     
     # --- System Tweaks ---
     set_io_scheduler "none"
-    set_sysctl "vm.swappiness" "10"
-    set_sysctl "vm.vfs_cache_pressure" "50"
     set_sata_alpm "max_performance"
     set_usb_autosuspend "on"
     set_audio_powersave "0"
@@ -302,8 +293,6 @@ set_balanced() {
 
     # --- System Tweaks ---
     set_io_scheduler "bfq"
-    set_sysctl "vm.swappiness" "60" # Default value
-    set_sysctl "vm.vfs_cache_pressure" "100" # Default value
     set_sata_alpm "medium_power"
     set_usb_autosuspend "auto"
     set_audio_powersave "1"
@@ -327,8 +316,6 @@ set_powersave() {
     
     # --- System Tweaks ---
     set_io_scheduler "bfq"
-    set_sysctl "vm.swappiness" "80"
-    set_sysctl "vm.vfs_cache_pressure" "200"
     set_sata_alpm "min_power"
     set_usb_autosuspend "auto"
     set_audio_powersave "1"
@@ -466,9 +453,6 @@ echo ""
 echo "System Tweaks Status:"
 # I/O Scheduler (checking sda as a representative device)
 if [ -r /sys/block/sda/queue/scheduler ]; then echo "  I/O Scheduler (sda): $(cat /sys/block/sda/queue/scheduler)"; fi
-# VM settings
-echo "  Swappiness: $(sysctl -n vm.swappiness)"
-echo "  VFS Cache Pressure: $(sysctl -n vm.vfs_cache_pressure)"
 # SATA ALPM (checking host0)
 if [ -r /sys/class/scsi_host/host0/link_power_management_policy ]; then echo "  SATA ALPM (host0): $(cat /sys/class/scsi_host/host0/link_power_management_policy)"; fi
 # Audio Power Save
