@@ -401,9 +401,14 @@ echo ""
 echo "CPU Frequency & Governor:"
 for cpu in /sys/devices/system/cpu/cpu0/cpufreq/*; do
     name=$(basename "$cpu")
-    if [ "$name" = "scaling_setspeed" ] || [ "$name" = "energy_performance_available_preferences" ]; then
-        continue
-    fi
+    
+    # Filter out less relevant info for a cleaner status display
+    case "$name" in
+        affected_cpus|base_frequency|cpuinfo_avg_freq|cpuinfo_max_freq|cpuinfo_min_freq|cpuinfo_transition_latency|energy_performance_available_preferences|energy_performance_preference|related_cpus|scaling_available_governors|scaling_driver|scaling_setspeed)
+            continue
+            ;;
+    esac
+
     if [ -r "$cpu" ]; then
         value=$(cat "$cpu" 2>/dev/null)
         if [[ $name == *"freq" ]]; then value=$((value/1000))" MHz"; fi
