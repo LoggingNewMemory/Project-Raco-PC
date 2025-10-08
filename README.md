@@ -1,5 +1,15 @@
-# Templates
-Templates
+A Port of Project Raco for PC (Linux) <br />
+Supported: Intel CPU, Intel GPU, AMD GPU <br />
+
+How to run:
+```
+sudo Raco-main.sh 1
+```
+
+Note: <br />
+1 = Performance <br />
+2 = Balanced <br />
+3 = Powersave <br />
 
 Support Me: <br />
 https://saweria.co/kanagawayamada (ID / PH) <br />
