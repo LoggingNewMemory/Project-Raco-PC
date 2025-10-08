@@ -4,6 +4,7 @@ A Port of Project Raco for PC (Linux) <br />
 Supported: Intel CPU, Intel GPU, AMD GPU <br />
 
 How to run:
++ Download the Raco-main.sh
 ```
 sudo Raco-main.sh 1
 ```
