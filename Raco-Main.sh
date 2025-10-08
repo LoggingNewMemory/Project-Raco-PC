@@ -84,27 +84,6 @@ set_pstate_limits() {
     fi
 }
 
-# Set energy performance preference (for intel_pstate)
-# EPP can only be set when using powersave governor
-set_epp() {
-    local preference="$1"
-    for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local epp_file="$policy_dir/energy_performance_preference"
-        local gov_file="$policy_dir/scaling_governor"
-        
-        if [ -w "$epp_file" ] && [ -r "$gov_file" ]; then
-            local current_gov=$(<"$gov_file")
-            
-            # EPP only works with powersave governor
-            if [ "$current_gov" != "powersave" ]; then
-                write_to_sysfs "powersave" "$gov_file"
-            fi
-            
-            write_to_sysfs "$preference" "$epp_file"
-        fi
-    done
-}
-
 
 ##########################################
 # GPU HELPER FUNCTIONS
@@ -311,15 +290,11 @@ set_performance() {
     enable_boost
     disable_hwp_dynamic_boost
     set_pstate_limits 100 100
-    set_epp "performance"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
-        
-        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
-        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_min_freq"
-        write_to_sysfs "performance" "$policy_dir/scaling_governor"
+        [ -w "$policy_dir/scaling_governor" ] && write_to_sysfs "performance" "$policy_dir/scaling_governor"
     done
+    echo "✓ CPU Scaling Governor set to performance"
     
     echo ""
     echo "Applying Kernel & I/O tweaks for Performance..."
@@ -341,16 +316,11 @@ set_balanced() {
     enable_boost
     enable_hwp_dynamic_boost
     set_pstate_limits 20 100
-    set_epp "balance_performance"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
-        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
-
-        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
-        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
-        write_to_sysfs "powersave" "$policy_dir/scaling_governor"
+        [ -w "$policy_dir/scaling_governor" ] && write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
+    echo "✓ CPU Scaling Governor set to powersave"
     
     echo ""
     echo "Applying Kernel & I/O tweaks for Balanced..."
@@ -378,15 +348,11 @@ set_powersave() {
     disable_boost
     disable_hwp_dynamic_boost
     set_pstate_limits 10 30
-    set_epp "power"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
-        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
-        
-        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
-        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
-        write_to_sysfs "powersave" "$policy_dir/scaling_governor"
+        [ -w "$policy_dir/scaling_governor" ] && write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
+    echo "✓ CPU Scaling Governor set to powersave"
     
     echo ""
     echo "Applying Kernel & I/O tweaks for Powersave..."
@@ -497,7 +463,9 @@ for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
         cpu_num=$(echo "$cpu" | grep -oP 'cpu\K[0-9]+')
         freq=$(cat "$cpu")
         freq_mhz=$((freq / 1000))
-        echo "  CPU$cpu_num: ${freq_mhz} MHz"
+        gov_file="/sys/devices/system/cpu/cpu${cpu_num}/cpufreq/scaling_governor"
+        governor=$(cat "$gov_file" 2>/dev/null || echo "N/A")
+        echo "  CPU$cpu_num: ${freq_mhz} MHz (Governor: $governor)"
         break  # Just show one as example
     fi
 done
