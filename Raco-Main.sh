@@ -8,31 +8,6 @@
 # ==============================================================================
 
 
-###############################
-# SETTINGS
-###############################
-
-# LITE_MODE:
-# When set to 1, Performance mode uses schedutil/ondemand governor with
-# max frequency as ceiling, allowing dynamic scaling while prioritizing performance.
-# 0 = Use performance governor (always max frequency if supported).
-# 1 = Use dynamic governor with performance tuning.
-LITE_MODE=0
-
-# BETTER_POWERSAVE:
-# When set to 1, Powersave mode allows bursting to mid-frequency
-# for better responsiveness while still prioritizing power saving.
-# 0 = Strict powersave with minimal frequency.
-# 1 = Allow bursting to mid-frequency.
-BETTER_POWERSAVE=0
-
-# GPU_CONTROL:
-# Enable GPU frequency and power management
-# 0 = Skip GPU tweaks
-# 1 = Apply GPU tweaks
-GPU_CONTROL=1
-
-
 ##############################
 # SCRIPT INITIALIZATION
 ##############################
@@ -259,6 +234,11 @@ get_intel_gpu_freq_range() {
 set_performance() {
     echo "Applying Performance settings..."
 
+    if [ -w /sys/firmware/acpi/platform_profile ]; then
+        write_to_sysfs "performance" /sys/firmware/acpi/platform_profile
+        echo "✓ Platform profile set to performance"
+    fi
+
     enable_boost
     disable_hwp_dynamic_boost
     set_pstate_limits 100 100
@@ -271,24 +251,20 @@ set_performance() {
         # Set frequency limits FIRST
         write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
         
-        if [ "$LITE_MODE" -eq 1 ]; then
-            # Lite mode: Use dynamic governor with high minimum
-            local mid_freq=$(get_mid_freq "$policy_dir/scaling_available_frequencies")
-            [ "$mid_freq" -gt 0 ] && write_to_sysfs "$mid_freq" "$policy_dir/scaling_min_freq"
-            
-            write_to_sysfs "powersave" "$policy_dir/scaling_governor"
-        else
-            # Full performance: Use performance governor
-            write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_min_freq"
-            
-            write_to_sysfs "performance" "$policy_dir/scaling_governor"
-        fi
+        # Full performance: Use performance governor
+        write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_min_freq"
+        write_to_sysfs "performance" "$policy_dir/scaling_governor"
     done
 }
 
 set_balanced() {
     echo "Applying Balanced settings..."
 
+    if [ -w /sys/firmware/acpi/platform_profile ]; then
+        write_to_sysfs "balanced" /sys/firmware/acpi/platform_profile
+        echo "✓ Platform profile set to balanced"
+    fi
+ 
     enable_boost
     enable_hwp_dynamic_boost
     set_pstate_limits 20 100
@@ -310,15 +286,14 @@ set_balanced() {
 set_powersave() {
     echo "Applying Powersave settings..."
 
-    disable_boost
-    disable_hwp_dynamic_boost
-    
-    if [ "$BETTER_POWERSAVE" -eq 1 ]; then
-        set_pstate_limits 10 60
-    else
-        set_pstate_limits 10 30
+    if [ -w /sys/firmware/acpi/platform_profile ]; then
+        write_to_sysfs "balanced" /sys/firmware/acpi/platform_profile
+        echo "✓ Platform profile set to balanced"
     fi
     
+    disable_boost
+    disable_hwp_dynamic_boost
+    set_pstate_limits 10 30
     set_epp "power"
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
@@ -328,18 +303,8 @@ set_powersave() {
         # Set minimum first
         write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
         
-        if [ "$BETTER_POWERSAVE" -eq 1 ]; then
-            # Better powersave: Allow bursting to mid frequency
-            local mid_freq=$(get_mid_freq "$policy_dir/scaling_available_frequencies")
-            if [ "$mid_freq" -gt 0 ] && [ "$mid_freq" -gt "$cpuinfo_min_freq" ]; then
-                write_to_sysfs "$mid_freq" "$policy_dir/scaling_max_freq"
-            else
-                write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
-            fi
-        else
-            # Strict powersave: Lock to minimum
-            write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
-        fi
+        # Strict powersave: Lock to minimum
+        write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
         
         write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
@@ -351,8 +316,6 @@ set_powersave() {
 ##########################################
 
 set_gpu_performance() {
-    if [ "$GPU_CONTROL" -eq 0 ]; then return; fi
-    
     echo ""
     echo "Applying GPU Performance settings..."
     
@@ -370,8 +333,6 @@ set_gpu_performance() {
 }
 
 set_gpu_balanced() {
-    if [ "$GPU_CONTROL" -eq 0 ]; then return; fi
-    
     echo ""
     echo "Applying GPU Balanced settings..."
     
@@ -389,8 +350,6 @@ set_gpu_balanced() {
 }
 
 set_gpu_powersave() {
-    if [ "$GPU_CONTROL" -eq 0 ]; then return; fi
-    
     echo ""
     echo "Applying GPU Powersave settings..."
     
@@ -423,9 +382,7 @@ fi
 MODE=$1
 
 # Detect available GPUs
-if [ "$GPU_CONTROL" -eq 1 ]; then
-    detect_gpus
-fi
+detect_gpus
 
 case $MODE in
     1)
@@ -479,47 +436,45 @@ if [ -r /sys/devices/system/cpu/intel_pstate/max_perf_pct ]; then
 fi
 
 # Display GPU status
-if [ "$GPU_CONTROL" -eq 1 ]; then
-    echo ""
-    echo "GPU Status:"
+echo ""
+echo "GPU Status:"
+
+if [ "$AMD_GPU_FOUND" -eq 1 ]; then
+    echo "  AMD GPU detected:"
+    for card in /sys/class/drm/card*/device/pp_power_profile_mode; do
+        if [ -r "$card" ]; then
+            echo "    Current Power Profile: $(grep '\*' "$card")"
+            break
+        fi
+    done
+fi
+
+if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
+    echo "  Intel GPU detected:"
+    # Try GT interface
+    for gt_dir in /sys/class/drm/card*/gt/gt*; do
+        if [ -r "$gt_dir/rps_cur_freq_mhz" ]; then
+            cur_freq=$(cat "$gt_dir/rps_cur_freq_mhz" 2>/dev/null || echo "N/A")
+            min_freq=$(cat "$gt_dir/rps_min_freq_mhz" 2>/dev/null || echo "N/A")
+            max_freq=$(cat "$gt_dir/rps_max_freq_mhz" 2>/dev/null || echo "N/A")
+            echo "    Current: ${cur_freq} MHz"
+            echo "    Range: ${min_freq} - ${max_freq} MHz"
+            break
+        fi
+    done
     
-    if [ "$AMD_GPU_FOUND" -eq 1 ]; then
-        echo "  AMD GPU detected:"
-        for card in /sys/class/drm/card*/device/pp_power_profile_mode; do
-            if [ -r "$card" ]; then
-                echo "    Current Power Profile: $(grep '\*' "$card")"
-                break
-            fi
-        done
-    fi
-    
-    if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
-        echo "  Intel GPU detected:"
-        # Try GT interface
-        for gt_dir in /sys/class/drm/card*/gt/gt*; do
-            if [ -r "$gt_dir/rps_cur_freq_mhz" ]; then
-                cur_freq=$(cat "$gt_dir/rps_cur_freq_mhz" 2>/dev/null || echo "N/A")
-                min_freq=$(cat "$gt_dir/rps_min_freq_mhz" 2>/dev/null || echo "N/A")
-                max_freq=$(cat "$gt_dir/rps_max_freq_mhz" 2>/dev/null || echo "N/A")
-                echo "    Current: ${cur_freq} MHz"
-                echo "    Range: ${min_freq} - ${max_freq} MHz"
-                break
-            fi
-        done
-        
-        # Fallback to older interface
-        for card in /sys/class/drm/card*/gt_cur_freq_mhz; do
-            if [ -r "$card" ]; then
-                cur_freq=$(cat "$card" 2>/dev/null || echo "N/A")
-                echo "    Current: ${cur_freq} MHz"
-                break
-            fi
-        done
-    fi
-    
-    if [ "$AMD_GPU_FOUND" -eq 0 ] && [ "$INTEL_GPU_FOUND" -eq 0 ]; then
-        echo "  No supported GPU detected"
-    fi
+    # Fallback to older interface
+    for card in /sys/class/drm/card*/gt_cur_freq_mhz; do
+        if [ -r "$card" ]; then
+            cur_freq=$(cat "$card" 2>/dev/null || echo "N/A")
+            echo "    Current: ${cur_freq} MHz"
+            break
+        fi
+    done
+fi
+
+if [ "$AMD_GPU_FOUND" -eq 0 ] && [ "$INTEL_GPU_FOUND" -eq 0 ]; then
+    echo "  No supported GPU detected"
 fi
 
 exit 0
