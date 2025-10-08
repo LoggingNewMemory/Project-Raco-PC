@@ -284,7 +284,7 @@ set_performance() {
     set_usb_autosuspend "on"
     set_audio_powersave "0"
     set_ksm "0"
-    set_thp "madvise"
+    set_thp "always"
 }
 
 set_balanced() {
