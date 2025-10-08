@@ -338,10 +338,6 @@ set_audio_power() {
     fi
 }
 
-# ==================================
-# ===== NEW HELPER FUNCTIONS =======
-# ==================================
-
 # Configure WiFi power saving
 set_wifi_powersave() {
     local state="$1" # 1 for on, 0 for off
@@ -694,10 +690,7 @@ if [ "$AMD_GPU_FOUND" -eq 0 ] && [ "$INTEL_GPU_FOUND" -eq 0 ]; then
     echo "  No supported (AMD/Intel) GPU detected."
 fi
 
-# ============================================
-# ===== NEW STATUS REPORTING SECTION =========
-# ============================================
-
+# Display new system & device status
 echo ""
 echo "System & Device Status:"
 [ -r /sys/module/pcie_aspm/parameters/policy ] && echo "  PCIe ASPM Policy: $(cat /sys/module/pcie_aspm/parameters/policy)"
