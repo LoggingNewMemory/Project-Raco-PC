@@ -228,6 +228,91 @@ get_intel_gpu_freq_range() {
 
 
 ##########################################
+# KERNEL & I/O HELPER FUNCTIONS
+##########################################
+
+# Sets the I/O scheduler for block devices
+set_io_scheduler() {
+    local preferred_schedulers=("$@")
+    local scheduler_set=0
+    
+    for queue in /sys/block/*/queue; do
+        if [ -w "$queue/scheduler" ]; then
+            local available_schedulers=$(cat "$queue/scheduler")
+            for scheduler in "${preferred_schedulers[@]}"; do
+                if [[ "$available_schedulers" == *"$scheduler"* ]]; then
+                    write_to_sysfs "$scheduler" "$queue/scheduler"
+                    scheduler_set=1
+                    break 
+                fi
+            done
+        fi
+    done
+    [ "$scheduler_set" -eq 1 ] && echo "✓ I/O Scheduler configured."
+}
+
+# Configure Virtual Memory settings via sysctl
+set_vm_tweaks() {
+    local swappiness="$1"
+    local cache_pressure="$2"
+    local dirty_bg_ratio="$3"
+    local dirty_ratio="$4"
+
+    sysctl -w vm.swappiness="$swappiness" >/dev/null 2>&1
+    echo "✓ VM Swappiness set to $swappiness"
+
+    sysctl -w vm.vfs_cache_pressure="$cache_pressure" >/dev/null 2>&1
+    echo "✓ VM VFS Cache Pressure set to $cache_pressure"
+
+    sysctl -w vm.dirty_background_ratio="$dirty_bg_ratio" >/dev/null 2>&1
+    sysctl -w vm.dirty_ratio="$dirty_ratio" >/dev/null 2>&1
+    echo "✓ VM Dirty page ratios set to $dirty_bg_ratio% / $dirty_ratio%"
+}
+
+# Configure Kernel Samepage Merging (KSM)
+set_ksm() {
+    local state="$1" # 1 for on, 0 for off
+    if [ ! -w /sys/kernel/mm/ksm/run ]; then return; fi
+
+    if [ "$state" -eq 1 ]; then
+        write_to_sysfs "1" /sys/kernel/mm/ksm/run
+        write_to_sysfs "1500" /sys/kernel/mm/ksm/sleep_millisecs
+        write_to_sysfs "100" /sys/kernel/mm/ksm/pages_to_scan
+        echo "✓ KSM enabled (for memory saving)"
+    else
+        write_to_sysfs "0" /sys/kernel/mm/ksm/run
+        echo "✓ KSM disabled (for performance)"
+    fi
+}
+
+# Configure SATA ALPM (Aggressive Link Power Management)
+set_sata_alpm() {
+    local policy="$1"
+    for host in /sys/class/scsi_host/host*/link_power_management_policy; do
+        if [ -w "$host" ]; then
+            write_to_sysfs "$policy" "$host"
+        fi
+    done
+    echo "✓ SATA Link Power Management set to '$policy'"
+}
+
+# Configure Audio codec power saving
+set_audio_power() {
+    local state="$1" # 1 for on, 0 for off
+    if [ -w /sys/module/snd_hda_intel/parameters/power_save ]; then
+        write_to_sysfs "$state" /sys/module/snd_hda_intel/parameters/power_save
+        if [ "$state" -eq 1 ]; then
+             write_to_sysfs "Y" /sys/module/snd_hda_intel/parameters/power_save_controller
+             echo "✓ Audio codec power saving enabled"
+        else
+             write_to_sysfs "N" /sys/module/snd_hda_intel/parameters/power_save_controller
+             echo "✓ Audio codec power saving disabled"
+        fi
+    fi
+}
+
+
+##########################################
 # MODE-SPECIFIC CPU FUNCTIONS
 ##########################################
 
@@ -246,15 +331,19 @@ set_performance() {
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
         local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
-        local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
         
-        # Set frequency limits FIRST
         write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
-        
-        # Full performance: Use performance governor
         write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_min_freq"
         write_to_sysfs "performance" "$policy_dir/scaling_governor"
     done
+    
+    echo ""
+    echo "Applying Kernel & I/O tweaks for Performance..."
+    set_io_scheduler "kyber" "mq-deadline"
+    set_vm_tweaks 10 50 15 30
+    set_sata_alpm "max_performance"
+    set_audio_power 0
+    set_ksm 0
 }
 
 set_balanced() {
@@ -274,21 +363,32 @@ set_balanced() {
         local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
         local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
 
-        # Restore default limits
         write_to_sysfs "$cpuinfo_max_freq" "$policy_dir/scaling_max_freq"
         write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
-        
-        # Use powersave governor for balanced mode
         write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
+    
+    echo ""
+    echo "Applying Kernel & I/O tweaks for Balanced..."
+    set_io_scheduler "bfq" "mq-deadline"
+    set_vm_tweaks 60 100 10 20  # Default kernel values
+    set_sata_alpm "medium_power"
+    set_audio_power 1
+    set_ksm 0 
 }
 
 set_powersave() {
     echo "Applying Powersave settings..."
 
     if [ -w /sys/firmware/acpi/platform_profile ]; then
-        write_to_sysfs "balanced" /sys/firmware/acpi/platform_profile
-        echo "✓ Platform profile set to balanced"
+        local available_profiles=$(<"/sys/firmware/acpi/platform_profile")
+        if [[ "$available_profiles" == *"low-power"* ]]; then
+            write_to_sysfs "low-power" /sys/firmware/acpi/platform_profile
+            echo "✓ Platform profile set to low-power"
+        else
+            write_to_sysfs "balanced" /sys/firmware/acpi/platform_profile
+            echo "✓ Platform profile set to balanced (best available for powersave)"
+        fi
     fi
     
     disable_boost
@@ -298,16 +398,19 @@ set_powersave() {
 
     for policy_dir in /sys/devices/system/cpu/cpufreq/policy*; do
         local cpuinfo_min_freq=$(<"$policy_dir/cpuinfo_min_freq")
-        local cpuinfo_max_freq=$(<"$policy_dir/cpuinfo_max_freq")
         
-        # Set minimum first
         write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_min_freq"
-        
-        # Strict powersave: Lock to minimum
         write_to_sysfs "$cpuinfo_min_freq" "$policy_dir/scaling_max_freq"
-        
         write_to_sysfs "powersave" "$policy_dir/scaling_governor"
     done
+    
+    echo ""
+    echo "Applying Kernel & I/O tweaks for Powersave..."
+    set_io_scheduler "bfq"
+    set_vm_tweaks 80 150 5 10
+    set_sata_alpm "min_power"
+    set_audio_power 1
+    set_ksm 1
 }
 
 
@@ -326,7 +429,6 @@ set_gpu_performance() {
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         get_intel_gpu_freq_range
         if [ "$INTEL_GPU_RP0" -gt 0 ]; then
-            # Set to maximum performance (RP0)
             set_intel_gpu_freq "$INTEL_GPU_RP0" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"
         fi
     fi
@@ -343,7 +445,6 @@ set_gpu_balanced() {
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         get_intel_gpu_freq_range
         if [ "$INTEL_GPU_MAX" -gt 0 ]; then
-            # Allow full range, let GPU decide
             set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"
         fi
     fi
@@ -360,7 +461,6 @@ set_gpu_powersave() {
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         get_intel_gpu_freq_range
         if [ "$INTEL_GPU_RPn" -gt 0 ]; then
-            # Lock to minimum frequency (RPn)
             set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RPn" "$INTEL_GPU_RPn"
         fi
     fi
