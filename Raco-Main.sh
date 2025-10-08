@@ -413,9 +413,12 @@ echo "--------------------------------"
 echo ""
 echo "CPU Frequency & Governor:"
 for cpu in /sys/devices/system/cpu/cpu0/cpufreq/*; do
+    name=$(basename "$cpu")
+    if [ "$name" = "scaling_setspeed" ] || [ "$name" = "energy_performance_available_preferences" ]; then
+        continue
+    fi
     if [ -r "$cpu" ]; then
-        name=$(basename "$cpu")
-        value=$(cat "$cpu")
+        value=$(cat "$cpu" 2>/dev/null)
         if [[ $name == *"freq" ]]; then value=$((value/1000))" MHz"; fi
         printf "  %-22s: %s\n" "$name" "$value"
     fi
