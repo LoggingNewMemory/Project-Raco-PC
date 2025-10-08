@@ -38,22 +38,6 @@ write_to_sysfs() {
     fi
 }
 
-# Gets the middle frequency from available frequencies
-get_mid_freq() {
-    local freqs_file="$1"
-    if [ ! -r "$freqs_file" ]; then echo 0; return; fi
-
-    local freqs=( $(tr ' ' '\n' < "$freqs_file" | sort -n) )
-    local count=${#freqs[@]}
-
-    if [ "$count" -eq 0 ]; then
-        echo 0
-    else
-        local mid_index=$((count / 2))
-        echo "${freqs[$mid_index]}"
-    fi
-}
-
 # Disable Intel Turbo Boost
 disable_boost() {
     if [ -w /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
