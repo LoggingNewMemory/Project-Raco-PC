@@ -338,6 +338,98 @@ set_audio_power() {
     fi
 }
 
+# ==================================
+# ===== NEW HELPER FUNCTIONS =======
+# ==================================
+
+# Configure WiFi power saving
+set_wifi_powersave() {
+    local state="$1" # 1 for on, 0 for off
+    local applied=0
+    # Common path for Intel iwlwifi
+    if [ -w /sys/module/iwlwifi/parameters/power_save ]; then
+        write_to_sysfs "$state" /sys/module/iwlwifi/parameters/power_save
+        applied=1
+    fi
+    # You can add more driver paths here if needed
+    
+    if [ "$applied" -eq 1 ]; then
+        [ "$state" -eq 1 ] && echo "✓ WiFi power saving enabled" || echo "✓ WiFi power saving disabled"
+    fi
+}
+
+# Configure USB autosuspend
+set_usb_autosuspend() {
+    local state="$1" # 1 for on (auto), 0 for off (on)
+    local control_val="auto"
+    [ "$state" -eq 0 ] && control_val="on"
+
+    for dev in /sys/bus/usb/devices/*/power/control; do
+        if [ -w "$dev" ]; then
+            write_to_sysfs "$control_val" "$dev"
+        fi
+    done
+    [ "$state" -eq 1 ] && echo "✓ USB autosuspend enabled" || echo "✓ USB autosuspend disabled"
+}
+
+# Configure PCIe Active State Power Management (ASPM)
+set_pcie_aspm() {
+    local policy="$1"
+    if [ -w /sys/module/pcie_aspm/parameters/policy ]; then
+        write_to_sysfs "$policy" /sys/module/pcie_aspm/parameters/policy
+        echo "✓ PCIe ASPM policy set to '$policy'"
+    fi
+}
+
+# Configure Transparent Huge Pages (THP)
+set_thp() {
+    local mode="$1" # "always", "madvise", or "never"
+    if [ -w /sys/kernel/mm/transparent_hugepage/enabled ]; then
+        write_to_sysfs "$mode" /sys/kernel/mm/transparent_hugepage/enabled
+        echo "✓ Transparent Huge Pages set to '$mode'"
+    fi
+}
+
+# Configure CPU scheduler tunables for latency vs throughput
+set_scheduler_tweaks() {
+    local mode="$1"
+    case "$mode" in
+        "performance")
+            # Low latency for desktop responsiveness
+            sysctl -w kernel.sched_latency_ns=10000000 >/dev/null 2>&1
+            sysctl -w kernel.sched_min_granularity_ns=1000000 >/dev/null 2>&1
+            ;;
+        "balanced")
+            # Kernel defaults are generally balanced
+            sysctl -w kernel.sched_latency_ns=24000000 >/dev/null 2>&1
+            sysctl -w kernel.sched_min_granularity_ns=3000000 >/dev/null 2>&1
+            ;;
+        "powersave")
+            # High latency allows for better CPU sleep states
+            sysctl -w kernel.sched_latency_ns=48000000 >/dev/null 2>&1
+            sysctl -w kernel.sched_min_granularity_ns=6000000 >/dev/null 2>&1
+            ;;
+    esac
+    echo "✓ Kernel scheduler tuned for '$mode'"
+}
+
+# Disable Wake-on-LAN
+set_wol() {
+    local state="$1" # 1 for on, 0 for off
+    if ! command -v ethtool &> /dev/null; then
+        echo "⚠️  Warning: 'ethtool' not found. Skipping WoL configuration."
+        return
+    fi
+    
+    local wol_val="d" # disable
+    [ "$state" -eq 1 ] && wol_val="g" # enable magic packet
+    
+    for iface in $(ls /sys/class/net/ | grep -v '^lo$'); do
+        ethtool -s "$iface" wol "$wol_val" &>/dev/null || true
+    done
+    [ "$state" -eq 0 ] && echo "✓ Wake-on-LAN disabled for all interfaces"
+}
+
 
 ##########################################
 # MODE-SPECIFIC CPU FUNCTIONS
@@ -369,6 +461,12 @@ set_performance() {
     set_sata_alpm "max_performance"
     set_audio_power 0
     set_ksm 0
+    set_wifi_powersave 0
+    set_usb_autosuspend 0
+    set_pcie_aspm "performance"
+    set_thp "always"
+    set_scheduler_tweaks "performance"
+    set_wol 0
 }
 
 set_balanced() {
@@ -397,6 +495,12 @@ set_balanced() {
     set_sata_alpm "medium_power"
     set_audio_power 1
     set_ksm 0 
+    set_wifi_powersave 1
+    set_usb_autosuspend 1
+    set_pcie_aspm "default"
+    set_thp "madvise"
+    set_scheduler_tweaks "balanced"
+    set_wol 0
 }
 
 set_powersave() {
@@ -431,6 +535,12 @@ set_powersave() {
     set_sata_alpm "min_power"
     set_audio_power 1
     set_ksm 1
+    set_wifi_powersave 1
+    set_usb_autosuspend 1
+    set_pcie_aspm "powersave"
+    set_thp "madvise"
+    set_scheduler_tweaks "powersave"
+    set_wol 0
 }
 
 
@@ -527,7 +637,11 @@ case $MODE in
 esac
 
 echo ""
-echo "Current CPU frequency info:"
+echo "==================== CURRENT STATUS ===================="
+
+# Display CPU frequency info
+echo ""
+echo "CPU Frequency Info:"
 for cpu_dir in /sys/devices/system/cpu/cpu*/cpufreq; do
     if [ -r "$cpu_dir/scaling_cur_freq" ]; then
         cpu_num=$(basename "$(dirname "$cpu_dir")" | sed 's/cpu//')
@@ -542,66 +656,62 @@ for cpu_dir in /sys/devices/system/cpu/cpu*/cpufreq; do
 done
 
 # Display Intel P-State status
-echo ""
-echo "Intel P-State status:"
-if [ -r /sys/devices/system/cpu/intel_pstate/status ]; then
-    echo "  Status: $(cat /sys/devices/system/cpu/intel_pstate/status)"
+if [ -d /sys/devices/system/cpu/intel_pstate ]; then
+    echo ""
+    echo "Intel P-State Status:"
+    [ -r /sys/devices/system/cpu/intel_pstate/status ] && echo "  Status: $(cat /sys/devices/system/cpu/intel_pstate/status)"
+    if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+        turbo_status=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo)
+        [ "$turbo_status" -eq 0 ] && echo "  Turbo: Enabled" || echo "  Turbo: Disabled"
+    fi
+    [ -r /sys/devices/system/cpu/intel_pstate/min_perf_pct ] && echo "  Min Perf: $(cat /sys/devices/system/cpu/intel_pstate/min_perf_pct)%"
+    [ -r /sys/devices/system/cpu/intel_pstate/max_perf_pct ] && echo "  Max Perf: $(cat /sys/devices/system/cpu/intel_pstate/max_perf_pct)%"
+    [ -r /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference ] && echo "  EPP: $(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference)"
 fi
-if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
-    turbo_status=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo)
-    [ "$turbo_status" -eq 0 ] && echo "  Turbo: Enabled" || echo "  Turbo: Disabled"
-fi
-if [ -r /sys/devices/system/cpu/intel_pstate/min_perf_pct ]; then
-    echo "  Min Perf: $(cat /sys/devices/system/cpu/intel_pstate/min_perf_pct)%"
-fi
-if [ -r /sys/devices/system/cpu/intel_pstate/max_perf_pct ]; then
-    echo "  Max Perf: $(cat /sys/devices/system/cpu/intel_pstate/max_perf_pct)%"
-fi
-if [ -r /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference ]; then
-    echo "  EPP: $(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference)"
-fi
-
 
 # Display GPU status
 echo ""
 echo "GPU Status:"
-
 if [ "$AMD_GPU_FOUND" -eq 1 ]; then
     echo "  AMD GPU detected:"
     for card in /sys/class/drm/card*/device/pp_power_profile_mode; do
-        if [ -r "$card" ]; then
-            echo "    Current Power Profile: $(grep '\*' "$card")"
-            break
-        fi
+        [ -r "$card" ] && echo "    Current Power Profile: $(grep '\*' "$card")" && break
     done
 fi
-
 if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
     echo "  Intel GPU detected:"
-    # Try GT interface
     for gt_dir in /sys/class/drm/card*/gt/gt*; do
         if [ -r "$gt_dir/rps_cur_freq_mhz" ]; then
             cur_freq=$(cat "$gt_dir/rps_cur_freq_mhz" 2>/dev/null || echo "N/A")
             min_freq=$(cat "$gt_dir/rps_min_freq_mhz" 2>/dev/null || echo "N/A")
             max_freq=$(cat "$gt_dir/rps_max_freq_mhz" 2>/dev/null || echo "N/A")
-            echo "    Current: ${cur_freq} MHz"
-            echo "    Range: ${min_freq} - ${max_freq} MHz"
+            echo "    Current: ${cur_freq} MHz, Range: ${min_freq} - ${max_freq} MHz"
             break
         fi
     done
-    
-    # Fallback to older interface
-    for card in /sys/class/drm/card*/gt_cur_freq_mhz; do
-        if [ -r "$card" ]; then
-            cur_freq=$(cat "$card" 2>/dev/null || echo "N/A")
-            echo "    Current: ${cur_freq} MHz"
-            break
-        fi
-    done
+fi
+if [ "$AMD_GPU_FOUND" -eq 0 ] && [ "$INTEL_GPU_FOUND" -eq 0 ]; then
+    echo "  No supported (AMD/Intel) GPU detected."
 fi
 
-if [ "$AMD_GPU_FOUND" -eq 0 ] && [ "$INTEL_GPU_FOUND" -eq 0 ]; then
-    echo "  No supported GPU detected"
+# ============================================
+# ===== NEW STATUS REPORTING SECTION =========
+# ============================================
+
+echo ""
+echo "System & Device Status:"
+[ -r /sys/module/pcie_aspm/parameters/policy ] && echo "  PCIe ASPM Policy: $(cat /sys/module/pcie_aspm/parameters/policy)"
+[ -r /sys/kernel/mm/transparent_hugepage/enabled ] && echo "  Transparent Huge Pages: $(cat /sys/kernel/mm/transparent_hugepage/enabled)"
+if [ -r /sys/module/iwlwifi/parameters/power_save ]; then
+    wifi_ps=$(cat /sys/module/iwlwifi/parameters/power_save)
+    [ "$wifi_ps" -eq 1 ] && echo "  WiFi Power Save (iwlwifi): Enabled" || echo "  WiFi Power Save (iwlwifi): Disabled"
 fi
+if [ -r /sys/bus/usb/devices/usb1/power/control ]; then
+    usb_as=$(cat /sys/bus/usb/devices/usb1/power/control)
+    echo "  USB Autosuspend (Sample): $usb_as"
+fi
+[ -r /proc/sys/vm/swappiness ] && echo "  VM Swappiness: $(cat /proc/sys/vm/swappiness)"
+
+echo "========================================================"
 
 exit 0
