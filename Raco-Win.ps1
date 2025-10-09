@@ -7,23 +7,24 @@
     performance, balanced use, or battery saving. It must be run with Administrator privileges.
 
 .PARAMETER Mode
-    Specifies the power mode to apply.
+    Specifies the power mode to apply. If omitted, the script will check for updates.
     1: Performance Mode
     2: Balanced Mode
     3: Powersave Mode
 
 .EXAMPLE
-    PS> ./Set-PowerMode.ps1 -Mode 1
-    Applies the Performance settings to the current power plan.
+    PS> ./Raco-Win.ps1
+    Checks for a new version of the script online.
 
 .EXAMPLE
-    PS> ./Set-PowerMode.ps1 -Mode 3
-    Applies the Powersave settings to the current power plan.
+    PS> ./Raco-Win.ps1 -Mode 1
+    Applies the Performance settings to the current power plan.
 #>
 
 [CmdletBinding()]
 param (
-    [Parameter(Mandatory = $true, HelpMessage = "Enter the mode: 1 for Performance, 2 for Balanced, 3 for Powersave.")]
+    # --- [MODIFIED] Made this parameter optional to allow for update checking ---
+    [Parameter(Mandatory = $false, HelpMessage = "Enter the mode: 1 for Performance, 2 for Balanced, 3 for Powersave.")]
     [ValidateSet(1, 2, 3)]
     [int]$Mode
 )
@@ -32,17 +33,52 @@ param (
 # SCRIPT INITIALIZATION
 #==============================================================================
 
+$scriptUrl = "https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Win.ps1"
+$scriptPath = $MyInvocation.MyCommand.Path
+
 # Check for Administrator privileges
 if (-Not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Error "❌ Error: This script must be run as Administrator." -ErrorAction Stop
 }
 
-# Get the GUID of the currently active power plan
-$activePlanGuid = (powercfg -getactivescheme).Split(' ')[3]
+function Check-ForUpdates {
+    $choice = Read-Host "Check for script updates? [y/n]"
+    if ($choice -ne 'y') {
+        return
+    }
+
+    Write-Host "Checking for updates..."
+    try {
+        # Download the latest script content
+        $latestScriptContent = Invoke-WebRequest -Uri $scriptUrl -UseBasicParsing | Select-Object -ExpandProperty Content
+        
+        # Get current script content
+        $currentScriptContent = Get-Content -Path $scriptPath -Raw
+
+        # Compare them
+        if ($latestScriptContent -eq $currentScriptContent) {
+            Write-Host "✅ You are already using the latest version."
+        }
+        else {
+            Write-Host "🔄 New version found! Updating..."
+            # Overwrite the current script with the new content
+            Set-Content -Path $scriptPath -Value $latestScriptContent -Force
+            Write-Host "✅ Script updated successfully. Please re-run the script."
+            Exit
+        }
+    }
+    catch {
+        Write-Warning "❌ Error: Failed to check for updates. Please check your internet connection."
+        $_
+    }
+}
 
 #==============================================================================
-# HELPER FUNCTION
+# HELPER FUNCTION AND GUIDs
 #==============================================================================
+
+# Get the GUID of the currently active power plan
+$activePlanGuid = (powercfg -getactivescheme).Split(' ')[3]
 
 # Helper function to set a specific power setting value for both AC and DC
 function Set-PowerSetting {
@@ -65,10 +101,7 @@ function Set-PowerSetting {
     }
 }
 
-#==============================================================================
 # GUIDs for common power settings
-#==============================================================================
-
 $subgroupCpu = "54533251-82be-4824-96c1-47b60b740d00" # Processor power management
 $settingMinState = "893dee8e-2bef-41e0-89c6-b55d0929964c" # Minimum processor state
 $settingMaxState = "bc5038f7-23e0-4960-96da-33abaf5935ec" # Maximum processor state
@@ -126,6 +159,18 @@ function Set-Powersave {
 #==============================================================================
 # MAIN EXECUTION LOGIC
 #==============================================================================
+
+# --- [MODIFIED] Check if a mode was provided. If not, check for updates. ---
+if (-not $PSBoundParameters.ContainsKey('Mode')) {
+    Check-ForUpdates
+    # Show usage if user did not update
+    Write-Host "`nUsage: $PSCommandPath -Mode <1|2|3>"
+    Write-Host "  1: Performance Mode"
+    Write-Host "  2: Balanced Mode"
+    Write-Host "  3: Powersave Mode"
+    exit
+}
+# --- [END MODIFIED] ---
 
 switch ($Mode) {
     1 {

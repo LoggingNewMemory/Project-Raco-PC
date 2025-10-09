@@ -2,9 +2,10 @@
 
 # ==============================================================================
 # Usage:
-#   sudo ./Raco-Main.sh 1  (For Performance Mode)
-#   sudo ./Raco-Main.sh 2  (For Balanced Mode)
-#   sudo ./Raco-Main.sh 3  (For Powersave Mode)
+#   sudo ./Raco-Main.sh        (Checks for updates)
+#   sudo ./Raco-Main.sh 1      (For Performance Mode)
+#   sudo ./Raco-Main.sh 2      (For Balanced Mode)
+#   sudo ./Raco-Main.sh 3      (For Powersave Mode)
 # ==============================================================================
 
 
@@ -14,12 +15,53 @@
 
 set -e
 
+SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
+SCRIPT_PATH=$(readlink -f "$0")
+
 # Check for root privileges
 if [ "$(id -u)" -ne 0 ]; then
     echo "❌ Error: This script must be run as root."
     echo "Please try again using 'sudo'."
     exit 1
 fi
+
+check_for_updates() {
+    read -p "Check for script updates? [y/n]: " -n 1 -r
+    echo "" # Move to a new line
+
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        return
+    fi
+
+    echo "Checking for updates..."
+    
+    # Download the latest version to a temporary file
+    local temp_file
+    temp_file=$(mktemp)
+    if ! curl -sL "$SCRIPT_URL" -o "$temp_file"; then
+        echo "❌ Error: Failed to download the latest script. Please check your internet connection."
+        rm -f "$temp_file"
+        exit 1
+    fi
+    
+    # Compare the local script with the downloaded one
+    if cmp -s "$SCRIPT_PATH" "$temp_file"; then
+        echo "✅ You are already using the latest version."
+        rm -f "$temp_file"
+    else
+        echo "🔄 New version found! Updating..."
+        # Replace the old script with the new one
+        if mv "$temp_file" "$SCRIPT_PATH"; then
+            chmod +x "$SCRIPT_PATH"
+            echo "✅ Script updated successfully. Please re-run the script."
+            exit 0
+        else
+            echo "❌ Error: Failed to replace the script. Please check file permissions."
+            rm -f "$temp_file" # Clean up temp file on failure
+            exit 1
+        fi
+    fi
+}
 
 
 ##############################
@@ -338,13 +380,17 @@ set_gpu_powersave() {
 # MAIN EXECUTION LOGIC
 ##########################################
 
+# --- [MODIFIED] Check for mode argument ---
 if [ -z "$1" ]; then
+    check_for_updates
+    # If the user declined the update check, show usage info
     echo "Usage: sudo $0 <mode>"
     echo "  1: Performance Mode"
     echo "  2: Balanced (Default) Mode"
     echo "  3: Powersave Mode"
     exit 1
 fi
+# --- [END MODIFIED] ---
 
 MODE=$1
 detect_gpus
