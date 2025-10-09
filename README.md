@@ -1,12 +1,32 @@
 # HUGE WIP!!
 
-A Port of Project Raco for PC (Linux) <br />
+A Port of Project Raco for PC (Linux / Windows) <br />
+
+Raco-Win.ps1 - Windows
+Raco-Main.sh - Linux
+
 Supported: Intel CPU, Intel GPU, AMD GPU <br />
 
 How to run:
-+ Download the Raco-main.sh
++ Download the Raco-main.sh / Raco-Win.ps1
+
+Linux: 
 ```
-sudo Raco-main.sh 1
+sudo ./Raco-main.sh 1
+```
+
+Windows:
+
+### You Need to Do this first
+
+Open PowerShell > Run as Administrator 
+```
+Set-ExecutionPolicy RemoteSigned
+```
+
+then run 
+```
+./Raco-Win.ps1 -Mode 1
 ```
 
 Note: <br />
