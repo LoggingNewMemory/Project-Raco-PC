@@ -5,7 +5,7 @@ A Port of Project Raco for PC (Linux / Windows) <br />
 Raco-Win.ps1 - Windows <br />
 Raco-Main.sh - Linux <br />
 
-Supported: Intel CPU, Intel GPU, AMD GPU <br />
+Support: Idk, just test it (I only have Intel CPU & Intel GPU) <br />
 
 How to run:
 + Download the Raco-main.sh / Raco-Win.ps1
