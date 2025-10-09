@@ -2,8 +2,8 @@
 
 A Port of Project Raco for PC (Linux / Windows) <br />
 
-Raco-Win.ps1 - Windows
-Raco-Main.sh - Linux
+Raco-Win.ps1 - Windows <br />
+Raco-Main.sh - Linux <br />
 
 Supported: Intel CPU, Intel GPU, AMD GPU <br />
 
