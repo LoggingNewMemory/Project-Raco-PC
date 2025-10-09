@@ -117,30 +117,13 @@ set_epp() {
 
 # Detect available GPUs
 detect_gpus() {
-    AMD_GPU_FOUND=0
     INTEL_GPU_FOUND=0
-    
-    # Check for AMD GPU
-    if ls /sys/class/drm/card*/device/pp_power_profile_mode &>/dev/null; then
-        AMD_GPU_FOUND=1
-    fi
     
     # Check for Intel GPU
     if ls /sys/class/drm/card*/gt_* &>/dev/null 2>&1 || \
        [ -d /sys/kernel/debug/dri/0 ]; then
         INTEL_GPU_FOUND=1
     fi
-}
-
-# Set AMD GPU power profile
-set_amd_gpu_power_profile() {
-    local profile="$1"
-    for card in /sys/class/drm/card*/device/pp_power_profile_mode; do
-        if [ -w "$card" ]; then
-            write_to_sysfs "$profile" "$card"
-            echo "✓ AMD GPU: Power profile set to $profile"
-        fi
-    done
 }
 
 # Set Intel GPU frequency
@@ -326,7 +309,6 @@ set_powersave() {
 set_gpu_performance() {
     echo ""
     echo "Applying GPU Performance settings..."
-    if [ "$AMD_GPU_FOUND" -eq 1 ]; then set_amd_gpu_power_profile "1"; fi
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         get_intel_gpu_freq_range
         if [ "$INTEL_GPU_RP0" -gt 0 ]; then set_intel_gpu_freq "$INTEL_GPU_RP0" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"; fi
@@ -336,7 +318,6 @@ set_gpu_performance() {
 set_gpu_balanced() {
     echo ""
     echo "Applying GPU Balanced settings..."
-    if [ "$AMD_GPU_FOUND" -eq 1 ]; then set_amd_gpu_power_profile "0"; fi
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         get_intel_gpu_freq_range
         if [ "$INTEL_GPU_MAX" -gt 0 ]; then set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RP0" "$INTEL_GPU_RP0"; fi
@@ -346,7 +327,6 @@ set_gpu_balanced() {
 set_gpu_powersave() {
     echo ""
     echo "Applying GPU Powersave settings..."
-    if [ "$AMD_GPU_FOUND" -eq 1 ]; then set_amd_gpu_power_profile "5"; fi
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         get_intel_gpu_freq_range
         if [ "$INTEL_GPU_RPn" -gt 0 ]; then set_intel_gpu_freq "$INTEL_GPU_RPn" "$INTEL_GPU_RPn" "$INTEL_GPU_RPn"; fi
@@ -434,10 +414,6 @@ fi
 # Display GPU status
 echo ""
 echo "GPU Status:"
-if [ "$AMD_GPU_FOUND" -eq 1 ]; then
-    echo "  AMD GPU detected:"
-    for card in /sys/class/drm/card*/device/pp_power_profile_mode; do [ -r "$card" ] && echo "    Current Power Profile: $(grep '\*' "$card")" && break; done
-fi
 if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
     echo "  Intel GPU detected:"
     for gt_dir in /sys/class/drm/card*/gt/gt*; do
@@ -450,7 +426,7 @@ if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         fi
     done
 fi
-if [ "$AMD_GPU_FOUND" -eq 0 ] && [ "$INTEL_GPU_FOUND" -eq 0 ]; then echo "  No supported GPU detected"; fi
+if [ "$INTEL_GPU_FOUND" -eq 0 ]; then echo "  No supported GPU detected"; fi
 
 
 # Display System Tweaks Status
