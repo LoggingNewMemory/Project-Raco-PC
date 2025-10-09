@@ -12,7 +12,7 @@ How to run:
 
 Linux: 
 ```
-sudo ./Raco-main.sh 1
+sudo sh ./Raco-main.sh 1
 ```
 
 Windows:
