@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Adjusts the active Windows power plan for Performance, Balanced, or Powersave modes.
 
@@ -108,6 +108,15 @@ $settingMaxState = "bc5038f7-23e0-4960-96da-33abaf5935ec" # Maximum processor st
 $settingBoostMode = "be337238-0d82-4146-a960-4f3749d470c7" # Processor performance boost mode
 # Boost Modes: 0=Disabled, 1=Enabled, 2=Aggressive, 3=Efficient Enabled, 4=Efficient Aggressive, 5=Aggressive At Guaranteed
 
+# --- NEW ADVANCED CPU SETTINGS (Often hidden) ---
+$settingEPP = "36687f9e-e3a5-4dbf-b1dc-15eb381c6863"        # Energy performance preference policy (0 = Max Perf)
+$settingTimeCheckInterval = "4d2b0152-7d5c-498b-88e2-34345392a2c5" # Performance time check interval (1 = 1ms check)
+$settingPerfDecreaseTime = "d8edeb9b-95cf-4f95-a73c-b061973693c8"  # Performance decrease time (100 = Slowest downclock)
+$settingIdleDisable = "5d76a2ca-e8c0-402f-a133-2158492d58ad"        # Disable idle states (C-states) (0 = Disable)
+$settingPerfIncrease = "465e1f50-b610-473a-ab58-a740a309a815"       # Processor performance increase policy (2 = Rocket)
+$settingPerfDecrease = "465e1f50-b610-473a-ab58-a740a309a815"       # Processor performance decrease policy (1 = Single)
+# --- END NEW ADVANCED CPU SETTINGS ---
+
 $subgroupHdd = "0012ee47-9041-4b5d-9b77-535fba8b1442" # Hard disk
 $settingSataAlpm = "dab60367-53fe-4fbc-825e-521d069d2456" # AHCI Link Power Management - HIPM/DIPM
 # ALPM Modes: 0=Active, 1=HIPM, 2=DIPM (min_power)
@@ -116,18 +125,69 @@ $subgroupUsb = "2a737441-1930-4402-8d77-b2bebba308a3" # USB settings
 $settingUsbSuspend = "48e6b7a6-50f5-4782-a5d4-53bb8f07e226" # USB selective suspend setting
 # USB Suspend Modes: 0=Disabled, 1=Enabled
 
+# --- NEW: PCI Express Link State Power Management (LSPM) ---
+$subgroupPcie = "501a4d13-42af-4429-9fd1-a8218c268e20" # PCI Express
+$settingPcieLspm = "ee12f906-d277-404b-b6da-e5fa1a576df5" # Link State Power Management
+
+# --- NEW FUNCTION TO UNHIDE SETTINGS ---
+function Set-HiddenAttributes {
+    Write-Host "`n👀 Unhiding advanced CPU power settings for modification..."
+
+    # The -ATTRIB_HIDE flag removes the 'hide' attribute, making the setting visible and editable.
+    
+    # Performance Policies (Increase/Decrease)
+    Write-Host "   - Unhiding Performance Policies..."
+    powercfg -attributes $subgroupCpu $settingPerfIncrease -ATTRIB_HIDE | Out-Null
+    
+    # Performance Time Check Interval (Responsiveness)
+    Write-Host "   - Unhiding Time Check Interval..."
+    powercfg -attributes $subgroupCpu $settingTimeCheckInterval -ATTRIB_HIDE | Out-Null
+
+    # Performance Decrease Time (Sustained Clock)
+    Write-Host "   - Unhiding Performance Decrease Time..."
+    powercfg -attributes $subgroupCpu $settingPerfDecreaseTime -ATTRIB_HIDE | Out-Null
+    
+    # Disable CPU Idle States (C-states)
+    Write-Host "   - Unhiding CPU Idle States (C-states)..."
+    powercfg -attributes $subgroupCpu $settingIdleDisable -ATTRIB_HIDE | Out-Null
+
+    # Energy performance preference policy (EPP)
+    Write-Host "   - Unhiding Energy Performance Preference..."
+    powercfg -attributes $subgroupCpu $settingEPP -ATTRIB_HIDE | Out-Null
+
+    Write-Host "✅ Hidden settings now unmasked."
+}
+# ----------------------------------------
+
+
 #==============================================================================
 # MODE-SPECIFIC FUNCTIONS
 #==============================================================================
 
 function Set-Performance {
     Write-Host "Applying Performance settings..."
-    # --- CPU ---
-    Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingBoostMode -FriendlyName "CPU Boost Mode" -Value 2 # Aggressive
+    # --- CPU Core Performance Settings ---
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingMinState -FriendlyName "CPU Min State" -Value 100 # 100%
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingMaxState -FriendlyName "CPU Max State" -Value 100 # 100%
+    Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingBoostMode -FriendlyName "CPU Boost Mode" -Value 2 # Aggressive
+    Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingEPP -FriendlyName "Energy Perf Preference" -Value 0 # 0 = Max Performance
+
+    # --- Advanced Aggressive CPU Tweaks ---
+    # UPDATED VALUE: 1 = Disable Idle (Max Performance)
+    Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingIdleDisable -FriendlyName "Disable CPU Idle States" -Value 1 # 1 = Disable C-States 
+
+    # --- REMOVED: These settings are not supported on your hardware and cause errors ---
+    # Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingPerfIncrease -FriendlyName "Perf Increase Policy" -Value 2 
+    # Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingPerfDecrease -FriendlyName "Perf Decrease Policy" -Value 1 
     
-    # --- System Tweaks ---
+    # --- Low Latency/Responsiveness Tweaks ---
+    Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingTimeCheckInterval -FriendlyName "Perf Time Check Interval" -Value 1 # 1ms check
+    Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingPerfDecreaseTime -FriendlyName "Perf Decrease Time" -Value 100 # Sustained Max Clock
+
+    # --- System Tweaks (GPU/Storage/USB) ---
+    # NEW: Forces PCIe link to remain fully active for max GPU/SSD speed.
+    Set-PowerSetting -Subgroup $subgroupPcie -Setting $settingPcieLspm -FriendlyName "PCIe LSPM" -Value 0 # Off (Max Performance)
+
     Set-PowerSetting -Subgroup $subgroupHdd -Setting $settingSataAlpm -FriendlyName "SATA ALPM" -Value 0 # Active (max_performance)
     Set-PowerSetting -Subgroup $subgroupUsb -Setting $settingUsbSuspend -FriendlyName "USB Suspend" -Value 0 # Disabled (equivalent to 'on')
 }
@@ -135,7 +195,7 @@ function Set-Performance {
 function Set-Balanced {
     Write-Host "Applying Balanced settings..."
     # --- CPU ---
-    Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingBoostMode -FriendlyName "CPU Boost Mode" -Value 4 # Efficient Aggressive (Windows Default)
+    Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingBoostMode -FriendlyName "CPU Boost Mode" -Value 1 # Enabled (New safe default) 
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingMinState -FriendlyName "CPU Min State" -Value 5   # 5%
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingMaxState -FriendlyName "CPU Max State" -Value 100 # 100%
     
@@ -174,6 +234,7 @@ if (-not $PSBoundParameters.ContainsKey('Mode')) {
 
 switch ($Mode) {
     1 {
+        Set-HiddenAttributes # NEW: Unhide settings first
         Set-Performance
         Write-Host "`n✅ Performance mode activated. 🔥"
     }
