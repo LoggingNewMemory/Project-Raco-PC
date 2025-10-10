@@ -30,6 +30,9 @@ then run
 ```
 ./Raco-Win.ps1 -Mode 1
 ```
+Troubleshoot if you can't run it: <br />
+- Right click Raco-Win.ps1 select Properties then tick unblock
+- apply > ok
 
 Note: <br />
 1 = Performance <br />
