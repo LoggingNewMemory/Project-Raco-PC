@@ -25,7 +25,7 @@ Open PowerShell > Run as Administrator
 ```
 Set-ExecutionPolicy RemoteSigned
 ```
-
+then y then enter <br />
 then run 
 ```
 ./Raco-Win.ps1 -Mode 1
