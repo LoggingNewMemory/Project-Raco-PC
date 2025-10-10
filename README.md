@@ -34,6 +34,17 @@ Troubleshoot if you can't run it: <br />
 - Right click Raco-Win.ps1 select Properties then tick unblock
 - apply > ok
 
+### For Noobs (AKA: Windows user that have 0 knowledge using CLI)
+- Put it in C:/ (Basically the C drive, do not put it on any folder unless you know what are you doing)
+- Then type
+```
+cd ...
+```
+- Until the PowerShell is ```C:\> ```
+- Then type ```dir```
+- Raco-Win.ps1 should be on the list of dir
+- Then execute like what I mentioned in up (I will not repeat it again)
+
 Note: <br />
 1 = Performance <br />
 2 = Balanced <br />
