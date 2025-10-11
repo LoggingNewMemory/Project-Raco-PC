@@ -1,4 +1,6 @@
-﻿<#
+# Test For Update
+ 
+<#
 .SYNOPSIS
     Adjusts the active Windows power plan for Performance, Balanced, or Powersave modes.
 
@@ -246,4 +248,5 @@ switch ($Mode) {
 
 # Apply the changes
 powercfg -setactive $activePlanGuid | Out-Null
+
 Write-Host "Settings have been applied to the active power plan."
