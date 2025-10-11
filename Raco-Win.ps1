@@ -176,10 +176,6 @@ function Set-Performance {
     # UPDATED VALUE: 1 = Disable Idle (Max Performance)
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingIdleDisable -FriendlyName "Disable CPU Idle States" -Value 1 # 1 = Disable C-States 
 
-    # --- REMOVED: These settings are not supported on your hardware and cause errors ---
-    # Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingPerfIncrease -FriendlyName "Perf Increase Policy" -Value 2 
-    # Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingPerfDecrease -FriendlyName "Perf Decrease Policy" -Value 1 
-    
     # --- Low Latency/Responsiveness Tweaks ---
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingTimeCheckInterval -FriendlyName "Perf Time Check Interval" -Value 1 # 1ms check
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingPerfDecreaseTime -FriendlyName "Perf Decrease Time" -Value 100 # Sustained Max Clock
