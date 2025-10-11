@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Adjusts the active Windows power plan for Performance, Balanced, or Powersave modes.
 
@@ -213,7 +213,7 @@ function Set-Powersave {
     
     # --- System Tweaks ---
     Set-PowerSetting -Subgroup $subgroupHdd -Setting $settingSataAlpm -FriendlyName "SATA ALPM" -Value 2 # DIPM (min_power)
-    Set-PowerSetting -Subgroup $subgroupUsb -Setting $settingUsbSuspend -FriendlyName "USB Suspend" -Value 1 # Enabled (equivalent to 'auto')
+    Set-PowerSetting -subgroup $subgroupUsb -Setting $settingUsbSuspend -FriendlyName "USB Suspend" -Value 1 # Enabled (equivalent to 'auto')
 }
 
 #==============================================================================
