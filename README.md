@@ -26,7 +26,7 @@ Open PowerShell > Run as Administrator
 Set-ExecutionPolicy RemoteSigned
 ```
 then y then enter <br />
-then run 
+then run the script
 ```
 ./Raco-Win.ps1 -Mode 1
 ```
@@ -38,17 +38,22 @@ Troubleshoot if you can't run it: <br />
 - Put it in C:/ (Basically the C drive, do not put it on any folder unless you know what are you doing)
 - Then type
 ```
-cd ...
+cd c:\
 ```
-- Until the PowerShell is ```C:\> ```
+- The powershell will go to ```C:\> ``` directory
 - Then type ```dir```
 - Raco-Win.ps1 should be on the list of dir
-- Then execute like what I mentioned in up (I will not repeat it again)
+- Then execute the script by typing ```./Raco-Win.ps1 -Mode 1``` for example
 
 Note: <br />
 1 = Performance <br />
 2 = Balanced <br />
 3 = Powersave <br />
+
+type for checking script updates 
+```
+./Raco-Win.ps1
+```
 
 Support Me: <br />
 https://saweria.co/kanagawayamada (ID / PH) <br />
