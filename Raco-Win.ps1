@@ -1,3 +1,5 @@
+# Test For Update
+ 
 <#
 .SYNOPSIS
     Adjusts the active Windows power plan for Performance, Balanced, Powersave, or Reset modes.
@@ -146,7 +148,7 @@ function Set-Performance {
 
     # --- Advanced Aggressive CPU Tweaks ---
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingIdleDisable -FriendlyName "Disable CPU Idle States" -Value 1 # 1 = Disable C-States 
-    
+
     # --- Low Latency/Responsiveness Tweaks ---
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingTimeCheckInterval -FriendlyName "Perf Time Check Interval" -Value 1 # 1ms check
     Set-PowerSetting -Subgroup $subgroupCpu -Setting $settingPerfDecreaseTime -FriendlyName "Perf Decrease Time" -Value 100 # Sustained Max Clock
@@ -219,6 +221,7 @@ function Set-Powersave {
     Set-PowerSetting -Subgroup $subgroupHdd -Setting $settingSataAlpm -FriendlyName "SATA ALPM" -Value 2 # DIPM (min_power)
     # USB Suspend: Re-enable selective suspend to power down inactive USB ports
     Set-PowerSetting -Subgroup $subgroupUsb -Setting $settingUsbSuspend -FriendlyName "USB Suspend" -Value 1 # Enabled
+    Set-PowerSetting -subgroup $subgroupUsb -Setting $settingUsbSuspend -FriendlyName "USB Suspend" -Value 1 # Enabled (equivalent to 'auto')
 }
 
 #==============================================================================
@@ -257,4 +260,5 @@ switch ($Mode) {
 
 # Apply the changes
 powercfg -setactive $activePlanGuid | Out-Null
+
 Write-Host "Settings have been applied to the active power plan."
