@@ -1,0 +1,33 @@
+SETUP GUIDE FOR SET SCRIPT AS SHORTCUT
+======================================
+
+Example:
+User: yamada
+Script Path: /home/yamada/Raco-Main.sh
+
+STEP 1: Configure Sudo Permissions
+----------------------------------
+1. Open a terminal.
+2. Run the following command to edit the configuration:
+   sudo visudo
+
+3. Scroll to the very bottom of the file and add this exact line
+(Note: Change the User and Script path according to your settings)
+THIS IS JUST AN EXAMPLE!!!
+
+yamada ALL=(ALL) NOPASSWD: /home/yamada/Raco-Main.sh
+
+4. Save and exit (Ctrl+O, Enter, Ctrl+X).
+
+STEP 2: Keyboard Shortcut Commands
+----------------------------------
+Copy and paste these commands into your custom keyboard shortcut settings:
+
+For Performance Mode:
+sudo /home/yamada/Raco-Main.sh 1
+
+For Balanced Mode:
+sudo /home/yamada/Raco-Main.sh 2
+
+For Powersave Mode:
+sudo /home/yamada/Raco-Main.sh 3
