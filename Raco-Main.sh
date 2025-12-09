@@ -3,7 +3,7 @@
 # ==============================================================================
 # Usage:
 #   sudo ./Raco-Main.sh        (Checks for updates)
-#   sudo ./Raco-Main.sh 1      (For Performance Mode - "Fake AC" / Gaming)
+#   sudo ./Raco-Main.sh 1      (For Performance Mode)
 #   sudo ./Raco-Main.sh 2      (For Balanced Mode)
 #   sudo ./Raco-Main.sh 3      (For Powersave Mode)
 # ==============================================================================
@@ -104,8 +104,17 @@ stop_conflicts() {
 }
 
 restart_services() {
-    # Optional: restart them if going back to balanced/power (safest to leave off until reboot if user wants consistency)
-    echo "ℹ️  Note: Power management services (TLP/PPD) were stopped. Reboot to restore defaults."
+    echo "🔄 Restoring power management services..."
+    # Attempt to start standard power managers if they exist
+    for service in power-profiles-daemon tlp auto-cpufreq thermald; do
+        # Check if service exists before trying to start
+        if systemctl list-unit-files "$service.service" &>/dev/null; then
+            if ! systemctl is-active --quiet "$service"; then
+                echo "   -> Starting $service..."
+                systemctl start "$service" 2>/dev/null || true
+            fi
+        fi
+    done
 }
 
 
@@ -296,7 +305,7 @@ set_performance() {
 
 set_balanced() {
     echo "Applying Balanced settings..."
-    stop_conflicts
+    restart_services # RESTORE POWER SERVICES
     
     if grep -q "schedutil" /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors; then
         set_cpu_governor "schedutil"
@@ -317,7 +326,7 @@ set_balanced() {
 
 set_powersave() {
     echo "Applying Powersave settings..."
-    stop_conflicts
+    restart_services # RESTORE POWER SERVICES
     
     set_cpu_governor "powersave"
     set_cpu_epp "power"
