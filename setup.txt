@@ -1,31 +1,38 @@
-SETUP GUIDE FOR RACO SCRIPT
+SETUP GUIDE FOR RACO SCRIPT (FIXED)
 ===========================
 
 STEP 1: Grant Permissions (Run Once)
 ----------------------------------
 1. Open your terminal.
 2. Navigate to the folder where you saved the script.
-   (Example: cd ~/Downloads or cd ~/Documents)
-3. Run this single command to allow the script to run without a password:
+   (Example: cd ~/Downloads or cd /home/yamada/)
 
-echo "$USER ALL=(ALL) NOPASSWD: $(pwd)/Raco-Main.sh" | sudo tee /etc/sudoers.d/raco-control
+3. Run these TWO commands in order:
+
+First, make the script executable:
+chmod +x Raco-Main.sh
+
+Second, whitelist the script (allows running without password):
+echo "$USER ALL=(ALL) NOPASSWD: $(readlink -f Raco-Main.sh)" | sudo tee /etc/sudoers.d/raco-control
 
 (If asked for a password here, enter your user login password once).
 
 
 STEP 2: Set Keyboard Shortcuts
 ----------------------------------
-Go to your System Settings -> Keyboard -> Shortcuts and add these commands:
-(Note: Replace "/path/to/" with the actual location of your script, e.g., /home/yamada/)
+Go to your System Settings -> Keyboard -> Shortcuts and add these commands.
+
+IMPORTANT: Do NOT use "sh" in these commands. Use the full path directly.
 
 For Performance Mode:
-sudo sh /path/to/Raco-Main.sh 1
+sudo /path/to/Raco-Main.sh 1
 
 For Balanced Mode:
-sudo sh /path/to/Raco-Main.sh 2
+sudo /path/to/Raco-Main.sh 2
 
 For Powersave Mode:
-sudo sh /path/to/Raco-Main.sh 3
+sudo /path/to/Raco-Main.sh 3
 
-Example:
-sudo sh /home/yamada/Raco-Main.sh 1
+----------------------------------
+Example (if your script is in /home/yamada/):
+sudo /home/yamada/Raco-Main.sh 1
