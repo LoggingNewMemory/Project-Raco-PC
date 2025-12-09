@@ -80,6 +80,22 @@ write_to_sysfs() {
     fi
 }
 
+# Sends desktop notifications from root script to the user session
+send_notification() {
+    local title="$1"
+    local body="$2"
+    
+    # Check if we have a SUDO_USER (user who ran the script)
+    if [ -n "$SUDO_USER" ]; then
+        local user_id=$(id -u "$SUDO_USER")
+        # Define the DBus address for the user session
+        local bus="unix:path=/run/user/$user_id/bus"
+        
+        # Run notify-send as the user, pointing to their DBus session
+        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="$bus" notify-send "$title" "$body" 2>/dev/null || true
+    fi
+}
+
 
 ##########################################
 # CPU HELPER FUNCTIONS
@@ -400,16 +416,19 @@ case $MODE in
         set_performance
         set_gpu_performance
         echo "✅ Performance mode activated. 🔥"
+        send_notification "Project Raco PC" "Performance Mode Activated"
         ;;
     2)
         set_balanced
         set_gpu_balanced
         echo "✅ Balanced mode activated. ⚖️"
+        send_notification "Project Raco PC" "Balanced Mode Activated"
         ;;
     3)
         set_powersave
         set_gpu_powersave
         echo "✅ Powersave mode activated. 🔋"
+        send_notification "Project Raco PC" "Powersave Mode Activated"
         ;;
     *)
         echo "❌ Error: Invalid mode '$MODE'. Please use 1, 2, or 3."
