@@ -1,5 +1,5 @@
-SETUP GUIDE FOR RACO SCRIPT (SIMPLIFIED)
-======================================
+SETUP GUIDE FOR RACO SCRIPT
+===========================
 
 STEP 1: Grant Permissions (Run Once)
 ----------------------------------
@@ -19,13 +19,13 @@ Go to your System Settings -> Keyboard -> Shortcuts and add these commands:
 (Note: Replace "/path/to/" with the actual location of your script, e.g., /home/yamada/)
 
 For Performance Mode:
-sudo /path/to/Raco-Main.sh 1
+sudo sh /path/to/Raco-Main.sh 1
 
 For Balanced Mode:
-sudo /path/to/Raco-Main.sh 2
+sudo sh /path/to/Raco-Main.sh 2
 
 For Powersave Mode:
-sudo /path/to/Raco-Main.sh 3
+sudo sh /path/to/Raco-Main.sh 3
 
 Example:
-sudo /home/yamada/Raco-Main.sh 1
+sudo sh /home/yamada/Raco-Main.sh 1
