@@ -15,7 +15,7 @@
 
 set -e
 
-SCRIPT_VERSION="1.1"
+SCRIPT_VERSION="1.2"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
@@ -44,6 +44,12 @@ check_for_updates() {
 
     echo "Checking for updates..."
     
+    # Capture the current owner and group of the script BEFORE updating
+    local current_user
+    local current_group
+    current_user=$(stat -c '%U' "$SCRIPT_PATH")
+    current_group=$(stat -c '%G' "$SCRIPT_PATH")
+
     local temp_file
     temp_file=$(mktemp)
     if ! curl -sL "$SCRIPT_URL" -o "$temp_file"; then
@@ -60,10 +66,8 @@ check_for_updates() {
         if mv "$temp_file" "$SCRIPT_PATH"; then
             chmod +x "$SCRIPT_PATH"
             
-            # FIX: Restore ownership to the user who ran sudo
-            if [ -n "$SUDO_USER" ]; then
-                chown "$SUDO_USER:$(id -g "$SUDO_USER")" "$SCRIPT_PATH"
-            fi
+            # Restore the original ownership
+            chown "${current_user}:${current_group}" "$SCRIPT_PATH"
 
             echo "✅ Script updated. Please re-run the script to load new changes."
             exit 0
@@ -296,6 +300,35 @@ optimize_gpu() {
 
 
 ##########################################
+# MODE WRAPPERS
+##########################################
+
+set_performance() {
+    set_cpu_governor "performance"
+    set_cpu_epp "performance"
+    set_cpu_boost 1
+    set_laptop_mode_tweaks "performance"
+    set_network_tweaks "performance"
+}
+
+set_balanced() {
+    set_cpu_governor "schedutil"
+    set_cpu_epp "balance_performance"
+    set_cpu_boost 1
+    set_laptop_mode_tweaks "balanced"
+    set_network_tweaks "balanced"
+}
+
+set_powersave() {
+    set_cpu_governor "powersave"
+    set_cpu_epp "power"
+    set_cpu_boost 0
+    set_laptop_mode_tweaks "powersave"
+    set_network_tweaks "powersave"
+}
+
+
+##########################################
 # MAIN EXECUTION
 ##########################################
 
@@ -311,6 +344,9 @@ fi
 
 MODE=$1
 detect_hardware
+
+# Always stop conflicting services before applying our own modes
+stop_conflicts
 
 case $MODE in
     1)
