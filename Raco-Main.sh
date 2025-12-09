@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # Usage:
-#   sudo ./Raco-Main.sh        (Checks for updates)
+#   sudo ./Raco-Main.sh        (Shows Version & Checks for updates)
 #   sudo ./Raco-Main.sh 1      (For Performance Mode)
 #   sudo ./Raco-Main.sh 2      (For Balanced Mode)
 #   sudo ./Raco-Main.sh 3      (For Powersave Mode)
@@ -15,6 +15,7 @@
 
 set -e
 
+SCRIPT_VERSION="1.1"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
@@ -24,6 +25,14 @@ if [ "$(id -u)" -ne 0 ]; then
     echo "Please try again using 'sudo'."
     exit 1
 fi
+
+show_header() {
+    echo "========================================================"
+    echo "   Project Raco PC - Linux Power Optimizer"
+    echo "   Version: $SCRIPT_VERSION"
+    echo "========================================================"
+    echo ""
+}
 
 check_for_updates() {
     read -p "Check for script updates? [y/n]: " -n 1 -r
@@ -44,13 +53,13 @@ check_for_updates() {
     fi
     
     if cmp -s "$SCRIPT_PATH" "$temp_file"; then
-        echo "✅ You are using the latest version."
+        echo "✅ You are using the latest version ($SCRIPT_VERSION)."
         rm -f "$temp_file"
     else
         echo "🔄 New version found! Updating..."
         if mv "$temp_file" "$SCRIPT_PATH"; then
             chmod +x "$SCRIPT_PATH"
-            echo "✅ Script updated. Please re-run."
+            echo "✅ Script updated. Please re-run the script to load new changes."
             exit 0
         else
             echo "❌ Error: Update failed."
@@ -282,71 +291,11 @@ optimize_gpu() {
 
 
 ##########################################
-# MODE FUNCTIONS
-##########################################
-
-set_performance() {
-    echo "Applying 'FAKE AC' Performance settings..."
-    stop_conflicts # Disable TLP/PPD so they don't fight us on battery
-    
-    set_cpu_governor "performance"
-    set_cpu_epp "performance"
-    set_cpu_boost 1
-    
-    set_laptop_mode_tweaks "performance"
-    set_network_tweaks "performance"
-    
-    # Hardware Force
-    write_to_sysfs "max_performance" "/sys/class/scsi_host/host*/link_power_management_policy"
-    write_to_sysfs "on" "/sys/bus/usb/devices/*/power/control" 
-    write_to_sysfs "0" "/sys/module/snd_hda_intel/parameters/power_save"
-    write_to_sysfs "always" "/sys/kernel/mm/transparent_hugepage/enabled"
-}
-
-set_balanced() {
-    echo "Applying Balanced settings..."
-    restart_services # RESTORE POWER SERVICES
-    
-    if grep -q "schedutil" /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors; then
-        set_cpu_governor "schedutil"
-    else
-        set_cpu_governor "powersave"
-    fi
-    set_cpu_epp "balance_performance"
-    set_cpu_boost 1
-    
-    set_laptop_mode_tweaks "balanced"
-    set_network_tweaks "balanced"
-    
-    write_to_sysfs "medium_power" "/sys/class/scsi_host/host*/link_power_management_policy"
-    write_to_sysfs "auto" "/sys/bus/usb/devices/*/power/control"
-    write_to_sysfs "1" "/sys/module/snd_hda_intel/parameters/power_save"
-    write_to_sysfs "madvise" "/sys/kernel/mm/transparent_hugepage/enabled"
-}
-
-set_powersave() {
-    echo "Applying Powersave settings..."
-    restart_services # RESTORE POWER SERVICES
-    
-    set_cpu_governor "powersave"
-    set_cpu_epp "power"
-    set_cpu_boost 0
-    
-    set_laptop_mode_tweaks "powersave"
-    set_network_tweaks "powersave"
-    
-    write_to_sysfs "min_power" "/sys/class/scsi_host/host*/link_power_management_policy"
-    write_to_sysfs "auto" "/sys/bus/usb/devices/*/power/control"
-    write_to_sysfs "1" "/sys/module/snd_hda_intel/parameters/power_save"
-    write_to_sysfs "never" "/sys/kernel/mm/transparent_hugepage/enabled"
-}
-
-
-##########################################
 # MAIN EXECUTION
 ##########################################
 
 if [ -z "$1" ]; then
+    show_header
     check_for_updates
     echo "Usage: sudo $0 <mode>"
     echo "  1: Performance Mode (Forces AC behavior on Battery)"
