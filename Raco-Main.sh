@@ -78,6 +78,7 @@ write_to_sysfs() {
 apply_sysctl() {
     local key="$1"
     local value="$2"
+    # Only apply if the key exists in the system
     if sysctl -n "$key" &>/dev/null; then
         sysctl -w "$key=$value" &>/dev/null
     fi
@@ -163,12 +164,6 @@ set_cpu_boost() {
     if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
         write_to_sysfs "$state" "/sys/devices/system/cpu/cpufreq/boost"
     fi
-    
-    # AMD P-State specific (if applicable)
-    if [ "$CPU_VENDOR" == "AMD" ] && [ -w /sys/devices/system/cpu/amd_pstate/status ]; then
-        # AMD P-State doesn't always have a simple boost toggle, relies on Governor/EPP
-        true 
-    fi
 }
 
 set_intel_specifics() {
@@ -197,18 +192,24 @@ optimize_gpu() {
     
     # --- INTEL GPU ---
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
-        # Use existing helper (simplified here for brevity)
-        # Logic: find max freq, apply to min/max based on mode
-        # (This block assumes helper functions like get_intel_gpu_freq_range exist or logic is inline)
-        # For brevity, retaining logic structure:
+        # Check standard sysfs paths for Intel GT
         for gt_dir in /sys/class/drm/card*/gt/gt* /sys/class/drm/card*; do
-             if [ -w "$gt_dir/gt_max_freq_mhz" ] || [ -w "$gt_dir/rps_max_freq_mhz" ]; then
-                # Apply basic max freq logic if valid path
-                true # Placeholder for the detailed Intel logic from original script
+             if [ -r "$gt_dir/gt_max_freq_mhz" ]; then
+                local max=$(cat "$gt_dir/gt_max_freq_mhz")
+                local min=$(cat "$gt_dir/gt_min_freq_mhz" 2>/dev/null || echo 100)
+                
+                if [ "$mode" == "performance" ]; then
+                    write_to_sysfs "$max" "$gt_dir/gt_min_freq_mhz"
+                    write_to_sysfs "$max" "$gt_dir/gt_boost_freq_mhz"
+                elif [ "$mode" == "balanced" ]; then
+                    write_to_sysfs "$min" "$gt_dir/gt_min_freq_mhz"
+                    write_to_sysfs "$max" "$gt_dir/gt_boost_freq_mhz"
+                elif [ "$mode" == "powersave" ]; then
+                    write_to_sysfs "$min" "$gt_dir/gt_min_freq_mhz"
+                    write_to_sysfs "$min" "$gt_dir/gt_max_freq_mhz"
+                fi
              fi
         done
-        # Re-using original script's Intel logic implicitly or keeping it simple:
-        # Note: In a full merge, keep the original set_intel_gpu_freq functions here.
     fi
 
     # --- AMD GPU ---
@@ -227,62 +228,95 @@ optimize_gpu() {
     # --- NVIDIA GPU ---
     if [ "$NVIDIA_GPU_FOUND" -eq 1 ]; then
         if [ "$mode" == "performance" ]; then
-            # Enable Persistence Mode
             nvidia-smi -pm 1 >/dev/null
             echo "✓ Nvidia GPU: Persistence Mode Enabled"
-        elif [ "$mode" == "powersave" ]; then
-            # We don't disable PM as it causes lag, but we rely on driver auto-downclocking
-            true
         fi
     fi
 }
 
 
 ##########################################
-# SYSTEM & KERNEL TWEAKS
+# SYSTEM, NETWORK & KERNEL TWEAKS
 ##########################################
 
-set_system_tweaks() {
+set_network_tweaks() {
+    local mode="$1"
+    
+    # Load CAKE module just in case
+    modprobe sch_cake 2>/dev/null || true
+
+    if [ "$mode" == "performance" ] || [ "$mode" == "balanced" ]; then
+        # CAKE is excellent for gaming and fighting bufferbloat
+        apply_sysctl "net.core.default_qdisc" "cake"
+        apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
+        
+        # TCP Fast Open & Window Scaling for faster handshake/throughput
+        apply_sysctl "net.ipv4.tcp_fastopen" "3"
+        apply_sysctl "net.ipv4.tcp_window_scaling" "1"
+        apply_sysctl "net.ipv4.tcp_slow_start_after_idle" "0"
+    else
+        # Revert to standard cubic for powersave/stability
+        apply_sysctl "net.ipv4.tcp_congestion_control" "cubic"
+        apply_sysctl "net.core.default_qdisc" "fq_codel" # Fallback if cake uses too much CPU on weak devices
+    fi
+}
+
+set_ram_vm_tweaks() {
     local mode="$1" # performance, balanced, powersave
 
-    # 1. Virtual Memory (Swappiness & Cache)
     if [ "$mode" == "performance" ]; then
-        # Prefer RAM over swap, keep cache active but not aggressive
-        apply_sysctl "vm.swappiness" "10"
-        apply_sysctl "vm.vfs_cache_pressure" "50"
-        apply_sysctl "vm.dirty_ratio" "10"
-        apply_sysctl "kernel.nmi_watchdog" "0" # Disable watchdog for slight perf gain
+        # -- SWAP & CACHE --
+        apply_sysctl "vm.swappiness" "10"             # Avoid swapping unless necessary
+        apply_sysctl "vm.vfs_cache_pressure" "50"     # Cache inode/dentry information longer
+        
+        # -- DIRTY PAGES (Write Caching) --
+        # Allow more data in RAM before flushing to disk (increases burst write perf)
+        apply_sysctl "vm.dirty_ratio" "40"
+        apply_sysctl "vm.dirty_background_ratio" "10"
+        
+        # -- GAMING SPECIFIC --
+        # Increase map count (Required for some Steam games/Proton)
+        apply_sysctl "vm.max_map_count" "2147483642"
+        
+        # -- LATENCY --
+        apply_sysctl "vm.compaction_proactiveness" "0" # Reduce CPU usage from compaction
+        apply_sysctl "kernel.nmi_watchdog" "0"         # Disable watchdog (saves cycles)
+        
     elif [ "$mode" == "balanced" ]; then
         apply_sysctl "vm.swappiness" "60"
         apply_sysctl "vm.vfs_cache_pressure" "100"
+        apply_sysctl "vm.dirty_ratio" "20"
+        apply_sysctl "vm.dirty_background_ratio" "10"
+        apply_sysctl "vm.max_map_count" "1048576"      # Standard high value
         apply_sysctl "kernel.nmi_watchdog" "1"
+
     else # powersave
         apply_sysctl "vm.swappiness" "60"
         apply_sysctl "vm.vfs_cache_pressure" "100"
-        apply_sysctl "vm.dirty_writeback_centisecs" "1500" # Write to disk less often
+        
+        # Commit to disk less frequently to allow disk to sleep
+        apply_sysctl "vm.dirty_writeback_centisecs" "1500" 
         apply_sysctl "kernel.nmi_watchdog" "1"
     fi
-
-    # 2. Network (BBR + FQ for Performance)
-    if [ "$mode" == "performance" ]; then
-        apply_sysctl "net.core.default_qdisc" "fq"
-        apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
-    else
-        # Revert to standard cubic if possible, or leave as is (BBR is generally good always)
-        apply_sysctl "net.ipv4.tcp_congestion_control" "cubic"
-    fi
     
-    # 3. IO Scheduler
+    echo "✓ RAM & VM Tweaks applied for $mode"
+}
+
+set_io_tweaks() {
+    local mode="$1"
     local sched="bfq"
-    if [ "$mode" == "performance" ]; then sched="none"; fi # 'none' is best for NVMe
+    if [ "$mode" == "performance" ]; then sched="none"; fi # 'none' is best for NVMe/SSD
     
     for dev in /sys/block/[sv]d* /sys/block/nvme*; do
         if [ -d "$dev" ]; then
             write_to_sysfs "$sched" "$dev/queue/scheduler"
+            
+            # Reduce read-ahead for SSDs in performance mode (usually better latency)
+            if [ "$mode" == "performance" ]; then
+                 write_to_sysfs "0" "$dev/queue/rotational" 2>/dev/null
+            fi
         fi
     done
-
-    echo "✓ System Tweaks applied for $mode"
 }
 
 
@@ -299,8 +333,10 @@ set_performance() {
     set_cpu_boost 1
     set_intel_specifics "perf"
     
-    # System
-    set_system_tweaks "performance"
+    # Advanced Tweaks
+    set_ram_vm_tweaks "performance"
+    set_network_tweaks "performance"
+    set_io_tweaks "performance"
     
     # Hardware Specifics
     write_to_sysfs "max_performance" "/sys/class/scsi_host/host*/link_power_management_policy"
@@ -313,7 +349,6 @@ set_balanced() {
     echo "Applying UNIVERSAL Balanced settings..."
     
     # CPU
-    # Prefer schedutil if available, else powersave (Intel) or conservative
     if grep -q "schedutil" /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors; then
         set_cpu_governor "schedutil"
     else
@@ -323,8 +358,10 @@ set_balanced() {
     set_cpu_boost 1
     set_intel_specifics "bal"
 
-    # System
-    set_system_tweaks "balanced"
+    # Advanced Tweaks
+    set_ram_vm_tweaks "balanced"
+    set_network_tweaks "balanced"
+    set_io_tweaks "balanced"
     
     write_to_sysfs "medium_power" "/sys/class/scsi_host/host*/link_power_management_policy"
     write_to_sysfs "auto" "/sys/bus/usb/devices/*/power/control"
@@ -341,8 +378,10 @@ set_powersave() {
     set_cpu_boost 0
     set_intel_specifics "power"
 
-    # System
-    set_system_tweaks "powersave"
+    # Advanced Tweaks
+    set_ram_vm_tweaks "powersave"
+    set_network_tweaks "powersave"
+    set_io_tweaks "powersave"
     
     write_to_sysfs "min_power" "/sys/class/scsi_host/host*/link_power_management_policy"
     write_to_sysfs "auto" "/sys/bus/usb/devices/*/power/control"
@@ -358,7 +397,7 @@ set_powersave() {
 if [ -z "$1" ]; then
     check_for_updates
     echo "Usage: sudo $0 <mode>"
-    echo "  1: Performance Mode (Gaming/Compiling)"
+    echo "  1: Performance Mode (Gaming/Compiling/CAKE+BBR)"
     echo "  2: Balanced Mode (Daily Usage)"
     echo "  3: Powersave Mode (Battery Life)"
     exit 1
@@ -366,9 +405,6 @@ fi
 
 MODE=$1
 detect_hardware
-
-# Initialize GPU Helper logic from original script if needed
-# (Assuming original Intel logic is wrapped in optimize_gpu or similar)
 
 case $MODE in
     1)
@@ -401,6 +437,8 @@ echo "        SYSTEM STATUS"
 echo "--------------------------------"
 echo "  CPU Vendor: $CPU_VENDOR"
 echo "  Governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo N/A)"
+echo "  QDisc: $(sysctl -n net.core.default_qdisc)"
+echo "  VM Dirty Ratio: $(sysctl -n vm.dirty_ratio)"
 
 if [ "$INTEL_GPU_FOUND" -eq 1 ]; then echo "  GPU: Intel Detected"; fi
 if [ "$AMD_GPU_FOUND" -eq 1 ]; then echo "  GPU: AMD Detected (DPM State: $(cat /sys/class/drm/card*/device/power_dpm_force_performance_level 2>/dev/null))"; fi
