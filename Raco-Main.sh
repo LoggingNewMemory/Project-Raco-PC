@@ -59,6 +59,12 @@ check_for_updates() {
         echo "🔄 New version found! Updating..."
         if mv "$temp_file" "$SCRIPT_PATH"; then
             chmod +x "$SCRIPT_PATH"
+            
+            # FIX: Restore ownership to the user who ran sudo
+            if [ -n "$SUDO_USER" ]; then
+                chown "$SUDO_USER:$(id -g "$SUDO_USER")" "$SCRIPT_PATH"
+            fi
+
             echo "✅ Script updated. Please re-run the script to load new changes."
             exit 0
         else
@@ -68,7 +74,6 @@ check_for_updates() {
         fi
     fi
 }
-
 
 ##############################
 # HELPER FUNCTIONS
