@@ -3,7 +3,7 @@
 # ==============================================================================
 # Usage:
 #   sudo ./Raco-Main.sh        (Checks for updates)
-#   sudo ./Raco-Main.sh 1      (For Performance Mode)
+#   sudo ./Raco-Main.sh 1      (For Performance Mode - "Fake AC" / Gaming)
 #   sudo ./Raco-Main.sh 2      (For Balanced Mode)
 #   sudo ./Raco-Main.sh 3      (For Powersave Mode)
 # ==============================================================================
@@ -27,7 +27,7 @@ fi
 
 check_for_updates() {
     read -p "Check for script updates? [y/n]: " -n 1 -r
-    echo "" # Move to a new line
+    echo "" 
 
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         return
@@ -38,7 +38,7 @@ check_for_updates() {
     local temp_file
     temp_file=$(mktemp)
     if ! curl -sL "$SCRIPT_URL" -o "$temp_file"; then
-        echo "❌ Error: Failed to download updates. Check internet connection."
+        echo "❌ Error: Failed to download updates."
         rm -f "$temp_file"
         exit 1
     fi
@@ -68,17 +68,14 @@ check_for_updates() {
 write_to_sysfs() {
     local value="$1"
     local file="$2"
-    
     if [ -w "$file" ]; then
         echo "$value" > "$file" 2>/dev/null || true
     fi
 }
 
-# Helper to apply sysctl settings safely
 apply_sysctl() {
     local key="$1"
     local value="$2"
-    # Only apply if the key exists in the system
     if sysctl -n "$key" &>/dev/null; then
         sysctl -w "$key=$value" &>/dev/null
     fi
@@ -87,12 +84,28 @@ apply_sysctl() {
 send_notification() {
     local title="$1"
     local body="$2"
-    
     if [ -n "$SUDO_USER" ]; then
         local user_id=$(id -u "$SUDO_USER")
         local bus="unix:path=/run/user/$user_id/bus"
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="$bus" notify-send "$title" "$body" 2>/dev/null || true
     fi
+}
+
+# --- CRITICAL: STOP CONFLICTING SERVICES ---
+stop_conflicts() {
+    echo "Checking for conflicting power managers..."
+    # These services monitor the battery state and WILL undo our tweaks if left running
+    for service in tlp power-profiles-daemon auto-cpufreq thermald; do
+        if systemctl is-active --quiet "$service"; then
+            echo "⚠️  Stopping $service to prevent interference..."
+            systemctl stop "$service" 2>/dev/null || true
+        fi
+    done
+}
+
+restart_services() {
+    # Optional: restart them if going back to balanced/power (safest to leave off until reboot if user wants consistency)
+    echo "ℹ️  Note: Power management services (TLP/PPD) were stopped. Reboot to restore defaults."
 }
 
 
@@ -101,34 +114,21 @@ send_notification() {
 ##########################################
 
 detect_hardware() {
-    # CPU Vendor
     if grep -q "GenuineIntel" /proc/cpuinfo; then CPU_VENDOR="INTEL"; fi
     if grep -q "AuthenticAMD" /proc/cpuinfo; then CPU_VENDOR="AMD"; fi
     
-    # GPU Detection
     INTEL_GPU_FOUND=0
     AMD_GPU_FOUND=0
     NVIDIA_GPU_FOUND=0
     
-    # Intel
-    if ls /sys/class/drm/card*/gt_* &>/dev/null 2>&1 || [ -d /sys/kernel/debug/dri/0 ]; then
-        INTEL_GPU_FOUND=1
-    fi
-    
-    # AMD
-    if ls /sys/class/drm/card*/device/power_dpm_state &>/dev/null 2>&1; then
-        AMD_GPU_FOUND=1
-    fi
-
-    # Nvidia (Check for nvidia-smi tool)
-    if command -v nvidia-smi &>/dev/null; then
-        NVIDIA_GPU_FOUND=1
-    fi
+    if ls /sys/class/drm/card*/gt_* &>/dev/null 2>&1 || [ -d /sys/kernel/debug/dri/0 ]; then INTEL_GPU_FOUND=1; fi
+    if ls /sys/class/drm/card*/device/power_dpm_state &>/dev/null 2>&1; then AMD_GPU_FOUND=1; fi
+    if command -v nvidia-smi &>/dev/null; then NVIDIA_GPU_FOUND=1; fi
 }
 
 
 ##########################################
-# CPU OPTIMIZATION (UNIVERSAL)
+# CPU OPTIMIZATION
 ##########################################
 
 set_cpu_governor() {
@@ -139,70 +139,109 @@ set_cpu_governor() {
 }
 
 set_cpu_epp() {
-    local pref="$1" # performance, balance_performance, power
-    
-    # Intel & AMD P-State EPP
+    local pref="$1" 
     for path in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
         write_to_sysfs "$pref" "$path"
     done
 }
 
-# Controls Boost behavior for both Intel (Turbo) and AMD (Core Performance Boost)
 set_cpu_boost() {
     local state="$1" # 1=Enable, 0=Disable
-
-    # Intel P-State No-Turbo (Logic is inverted: 1=Disable Turbo)
     if [ "$CPU_VENDOR" == "INTEL" ]; then
-        if [ "$state" -eq 1 ]; then
-            write_to_sysfs "0" "/sys/devices/system/cpu/intel_pstate/no_turbo"
-        else
-            write_to_sysfs "1" "/sys/devices/system/cpu/intel_pstate/no_turbo"
-        fi
+        # 0 = Turbo Enabled, 1 = Turbo Disabled
+        local val=$((1-state))
+        write_to_sysfs "$val" "/sys/devices/system/cpu/intel_pstate/no_turbo"
     fi
-
-    # AMD & Generic ACPI Boost
     if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
         write_to_sysfs "$state" "/sys/devices/system/cpu/cpufreq/boost"
     fi
 }
 
-set_intel_specifics() {
-    local mode="$1" # perf, bal, power
-    if [ "$CPU_VENDOR" != "INTEL" ]; then return; fi
-    
-    if [ "$mode" == "perf" ]; then
-        write_to_sysfs "0" "/sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost"
-        write_to_sysfs "100" "/sys/devices/system/cpu/intel_pstate/min_perf_pct"
-    elif [ "$mode" == "bal" ]; then
-        write_to_sysfs "1" "/sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost"
-        write_to_sysfs "20" "/sys/devices/system/cpu/intel_pstate/min_perf_pct"
+
+##########################################
+# "FAKE AC" & SYSTEM TWEAKS
+##########################################
+
+set_laptop_mode_tweaks() {
+    local mode="$1" # performance, balanced, powersave
+
+    if [ "$mode" == "performance" ]; then
+        # --- THE "FAKE AC" LOGIC ---
+        # 1. Disable "Laptop Mode" - Kernel behaves as if plugged in (spins up disks, aggressive flushes)
+        apply_sysctl "vm.laptop_mode" "0" 
+        
+        # 2. Force PCIe Links to stay fully powered (Fixes battery micro-stutters)
+        write_to_sysfs "performance" "/sys/module/pcie_aspm/parameters/policy"
+        
+        # 3. Disable WiFi Power Save (Fixes ping spikes on battery)
+        for iface in $(ls /sys/class/net | grep -E 'wlan|wlp|wlx'); do
+            if command -v iw &>/dev/null; then
+                iw dev "$iface" set power_save off 2>/dev/null || true
+            fi
+        done
+
+        # 4. Standard VM Perf Tweaks
+        apply_sysctl "vm.swappiness" "10"
+        apply_sysctl "vm.vfs_cache_pressure" "50"
+        apply_sysctl "vm.dirty_ratio" "40"
+        apply_sysctl "vm.dirty_background_ratio" "10"
+        apply_sysctl "vm.max_map_count" "2147483642"
+        apply_sysctl "kernel.nmi_watchdog" "0"
+
+    elif [ "$mode" == "balanced" ]; then
+        apply_sysctl "vm.laptop_mode" "2" # Moderate power saving
+        write_to_sysfs "default" "/sys/module/pcie_aspm/parameters/policy"
+        
+        apply_sysctl "vm.swappiness" "60"
+        apply_sysctl "vm.vfs_cache_pressure" "100"
+        apply_sysctl "kernel.nmi_watchdog" "1"
+
+    else # powersave
+        apply_sysctl "vm.laptop_mode" "5" # Aggressive power saving
+        write_to_sysfs "powersave" "/sys/module/pcie_aspm/parameters/policy"
+        
+        # Re-enable WiFi Power Save
+        for iface in $(ls /sys/class/net | grep -E 'wlan|wlp|wlx'); do
+            if command -v iw &>/dev/null; then
+                iw dev "$iface" set power_save on 2>/dev/null || true
+            fi
+        done
+        
+        apply_sysctl "vm.swappiness" "60"
+        apply_sysctl "vm.dirty_writeback_centisecs" "1500"
+    fi
+}
+
+set_network_tweaks() {
+    local mode="$1"
+    modprobe sch_cake 2>/dev/null || true
+
+    if [ "$mode" == "performance" ] || [ "$mode" == "balanced" ]; then
+        apply_sysctl "net.core.default_qdisc" "cake"
+        apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
+        apply_sysctl "net.ipv4.tcp_fastopen" "3"
+        apply_sysctl "net.ipv4.tcp_window_scaling" "1"
     else
-        write_to_sysfs "0" "/sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost"
-        write_to_sysfs "10" "/sys/devices/system/cpu/intel_pstate/min_perf_pct"
+        apply_sysctl "net.ipv4.tcp_congestion_control" "cubic"
     fi
 }
 
 
 ##########################################
-# GPU OPTIMIZATION (UNIVERSAL)
+# GPU OPTIMIZATION
 ##########################################
 
 optimize_gpu() {
-    local mode="$1" # performance, balanced, powersave
+    local mode="$1"
     
-    # --- INTEL GPU ---
+    # INTEL
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
-        # Check standard sysfs paths for Intel GT
         for gt_dir in /sys/class/drm/card*/gt/gt* /sys/class/drm/card*; do
              if [ -r "$gt_dir/gt_max_freq_mhz" ]; then
                 local max=$(cat "$gt_dir/gt_max_freq_mhz")
                 local min=$(cat "$gt_dir/gt_min_freq_mhz" 2>/dev/null || echo 100)
-                
                 if [ "$mode" == "performance" ]; then
                     write_to_sysfs "$max" "$gt_dir/gt_min_freq_mhz"
-                    write_to_sysfs "$max" "$gt_dir/gt_boost_freq_mhz"
-                elif [ "$mode" == "balanced" ]; then
-                    write_to_sysfs "$min" "$gt_dir/gt_min_freq_mhz"
                     write_to_sysfs "$max" "$gt_dir/gt_boost_freq_mhz"
                 elif [ "$mode" == "powersave" ]; then
                     write_to_sysfs "$min" "$gt_dir/gt_min_freq_mhz"
@@ -212,111 +251,24 @@ optimize_gpu() {
         done
     fi
 
-    # --- AMD GPU ---
+    # AMD
     if [ "$AMD_GPU_FOUND" -eq 1 ]; then
         local dpm_level="auto"
         if [ "$mode" == "performance" ]; then dpm_level="high"; fi
-        if [ "$mode" == "balanced" ]; then dpm_level="auto"; fi
         if [ "$mode" == "powersave" ]; then dpm_level="low"; fi
-        
         for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
             write_to_sysfs "$dpm_level" "$card"
         done
-        echo "✓ AMD GPU: Set to $dpm_level"
     fi
 
-    # --- NVIDIA GPU ---
+    # NVIDIA
     if [ "$NVIDIA_GPU_FOUND" -eq 1 ]; then
         if [ "$mode" == "performance" ]; then
             nvidia-smi -pm 1 >/dev/null
+            # Lock clocks if possible (requires knowing your specific GPU max clocks, skipping unsafe locks)
             echo "✓ Nvidia GPU: Persistence Mode Enabled"
         fi
     fi
-}
-
-
-##########################################
-# SYSTEM, NETWORK & KERNEL TWEAKS
-##########################################
-
-set_network_tweaks() {
-    local mode="$1"
-    
-    # Load CAKE module just in case
-    modprobe sch_cake 2>/dev/null || true
-
-    if [ "$mode" == "performance" ] || [ "$mode" == "balanced" ]; then
-        # CAKE is excellent for gaming and fighting bufferbloat
-        apply_sysctl "net.core.default_qdisc" "cake"
-        apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
-        
-        # TCP Fast Open & Window Scaling for faster handshake/throughput
-        apply_sysctl "net.ipv4.tcp_fastopen" "3"
-        apply_sysctl "net.ipv4.tcp_window_scaling" "1"
-        apply_sysctl "net.ipv4.tcp_slow_start_after_idle" "0"
-    else
-        # Revert to standard cubic for powersave/stability
-        apply_sysctl "net.ipv4.tcp_congestion_control" "cubic"
-        apply_sysctl "net.core.default_qdisc" "fq_codel" # Fallback if cake uses too much CPU on weak devices
-    fi
-}
-
-set_ram_vm_tweaks() {
-    local mode="$1" # performance, balanced, powersave
-
-    if [ "$mode" == "performance" ]; then
-        # -- SWAP & CACHE --
-        apply_sysctl "vm.swappiness" "10"             # Avoid swapping unless necessary
-        apply_sysctl "vm.vfs_cache_pressure" "50"     # Cache inode/dentry information longer
-        
-        # -- DIRTY PAGES (Write Caching) --
-        # Allow more data in RAM before flushing to disk (increases burst write perf)
-        apply_sysctl "vm.dirty_ratio" "40"
-        apply_sysctl "vm.dirty_background_ratio" "10"
-        
-        # -- GAMING SPECIFIC --
-        # Increase map count (Required for some Steam games/Proton)
-        apply_sysctl "vm.max_map_count" "2147483642"
-        
-        # -- LATENCY --
-        apply_sysctl "vm.compaction_proactiveness" "0" # Reduce CPU usage from compaction
-        apply_sysctl "kernel.nmi_watchdog" "0"         # Disable watchdog (saves cycles)
-        
-    elif [ "$mode" == "balanced" ]; then
-        apply_sysctl "vm.swappiness" "60"
-        apply_sysctl "vm.vfs_cache_pressure" "100"
-        apply_sysctl "vm.dirty_ratio" "20"
-        apply_sysctl "vm.dirty_background_ratio" "10"
-        apply_sysctl "vm.max_map_count" "1048576"      # Standard high value
-        apply_sysctl "kernel.nmi_watchdog" "1"
-
-    else # powersave
-        apply_sysctl "vm.swappiness" "60"
-        apply_sysctl "vm.vfs_cache_pressure" "100"
-        
-        # Commit to disk less frequently to allow disk to sleep
-        apply_sysctl "vm.dirty_writeback_centisecs" "1500" 
-        apply_sysctl "kernel.nmi_watchdog" "1"
-    fi
-    
-    echo "✓ RAM & VM Tweaks applied for $mode"
-}
-
-set_io_tweaks() {
-    local mode="$1"
-    local sched="bfq"
-    if [ "$mode" == "performance" ]; then sched="none"; fi # 'none' is best for NVMe/SSD
-    
-    for dev in /sys/block/[sv]d* /sys/block/nvme*; do
-        if [ -d "$dev" ]; then
-            write_to_sysfs "$sched" "$dev/queue/scheduler"
-            
-            # Reduce read-ahead for SSDs in performance mode (usually better latency)
-            if [ "$mode" == "performance" ]; then
-                 write_to_sysfs "0" "$dev/queue/rotational" 2>/dev/null
-            fi
-        fi
-    done
 }
 
 
@@ -325,30 +277,27 @@ set_io_tweaks() {
 ##########################################
 
 set_performance() {
-    echo "Applying UNIVERSAL Performance settings..."
+    echo "Applying 'FAKE AC' Performance settings..."
+    stop_conflicts # Disable TLP/PPD so they don't fight us on battery
     
-    # CPU
     set_cpu_governor "performance"
     set_cpu_epp "performance"
     set_cpu_boost 1
-    set_intel_specifics "perf"
     
-    # Advanced Tweaks
-    set_ram_vm_tweaks "performance"
+    set_laptop_mode_tweaks "performance"
     set_network_tweaks "performance"
-    set_io_tweaks "performance"
     
-    # Hardware Specifics
+    # Hardware Force
     write_to_sysfs "max_performance" "/sys/class/scsi_host/host*/link_power_management_policy"
-    write_to_sysfs "on" "/sys/bus/usb/devices/*/power/control" # No autosuspend
+    write_to_sysfs "on" "/sys/bus/usb/devices/*/power/control" 
     write_to_sysfs "0" "/sys/module/snd_hda_intel/parameters/power_save"
     write_to_sysfs "always" "/sys/kernel/mm/transparent_hugepage/enabled"
 }
 
 set_balanced() {
-    echo "Applying UNIVERSAL Balanced settings..."
+    echo "Applying Balanced settings..."
+    stop_conflicts
     
-    # CPU
     if grep -q "schedutil" /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors; then
         set_cpu_governor "schedutil"
     else
@@ -356,12 +305,9 @@ set_balanced() {
     fi
     set_cpu_epp "balance_performance"
     set_cpu_boost 1
-    set_intel_specifics "bal"
-
-    # Advanced Tweaks
-    set_ram_vm_tweaks "balanced"
+    
+    set_laptop_mode_tweaks "balanced"
     set_network_tweaks "balanced"
-    set_io_tweaks "balanced"
     
     write_to_sysfs "medium_power" "/sys/class/scsi_host/host*/link_power_management_policy"
     write_to_sysfs "auto" "/sys/bus/usb/devices/*/power/control"
@@ -370,18 +316,15 @@ set_balanced() {
 }
 
 set_powersave() {
-    echo "Applying UNIVERSAL Powersave settings..."
+    echo "Applying Powersave settings..."
+    stop_conflicts
     
-    # CPU
     set_cpu_governor "powersave"
     set_cpu_epp "power"
     set_cpu_boost 0
-    set_intel_specifics "power"
-
-    # Advanced Tweaks
-    set_ram_vm_tweaks "powersave"
+    
+    set_laptop_mode_tweaks "powersave"
     set_network_tweaks "powersave"
-    set_io_tweaks "powersave"
     
     write_to_sysfs "min_power" "/sys/class/scsi_host/host*/link_power_management_policy"
     write_to_sysfs "auto" "/sys/bus/usb/devices/*/power/control"
@@ -397,9 +340,9 @@ set_powersave() {
 if [ -z "$1" ]; then
     check_for_updates
     echo "Usage: sudo $0 <mode>"
-    echo "  1: Performance Mode (Gaming/Compiling/CAKE+BBR)"
-    echo "  2: Balanced Mode (Daily Usage)"
-    echo "  3: Powersave Mode (Battery Life)"
+    echo "  1: Performance Mode (Forces AC behavior on Battery)"
+    echo "  2: Balanced Mode"
+    echo "  3: Powersave Mode"
     exit 1
 fi
 
@@ -410,20 +353,20 @@ case $MODE in
     1)
         set_performance
         optimize_gpu "performance"
-        echo "✅ Performance mode activated. 🔥"
-        send_notification "Project Raco PC" "Performance Mode Activated"
+        echo "✅ Performance locked. Battery saving disabled. 🔥"
+        send_notification "Project Raco PC" "Performance Mode Active"
         ;;
     2)
         set_balanced
         optimize_gpu "balanced"
         echo "✅ Balanced mode activated. ⚖️"
-        send_notification "Project Raco PC" "Balanced Mode Activated"
+        send_notification "Project Raco PC" "Balanced Mode Active"
         ;;
     3)
         set_powersave
         optimize_gpu "powersave"
         echo "✅ Powersave mode activated. 🔋"
-        send_notification "Project Raco PC" "Powersave Mode Activated"
+        send_notification "Project Raco PC" "Powersave Mode Active"
         ;;
     *)
         echo "❌ Error: Invalid mode '$MODE'."
@@ -436,12 +379,8 @@ echo "--------------------------------"
 echo "        SYSTEM STATUS"
 echo "--------------------------------"
 echo "  CPU Vendor: $CPU_VENDOR"
-echo "  Governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo N/A)"
-echo "  QDisc: $(sysctl -n net.core.default_qdisc)"
-echo "  VM Dirty Ratio: $(sysctl -n vm.dirty_ratio)"
-
-if [ "$INTEL_GPU_FOUND" -eq 1 ]; then echo "  GPU: Intel Detected"; fi
-if [ "$AMD_GPU_FOUND" -eq 1 ]; then echo "  GPU: AMD Detected (DPM State: $(cat /sys/class/drm/card*/device/power_dpm_force_performance_level 2>/dev/null))"; fi
-if [ "$NVIDIA_GPU_FOUND" -eq 1 ]; then echo "  GPU: Nvidia Detected (Persistence: $(nvidia-smi --query-gpu=persistence_mode --format=csv,noheader 2>/dev/null))"; fi
+echo "  Laptop Mode: $(sysctl -n vm.laptop_mode) (0=Force AC, >0=Battery Mode)"
+echo "  ASPM Policy: $(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || echo N/A)"
+echo "  Queue Disc: $(sysctl -n net.core.default_qdisc)"
 
 exit 0
