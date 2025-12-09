@@ -336,7 +336,7 @@ if [ -z "$1" ]; then
     show_header
     check_for_updates
     echo "Usage: sudo $0 <mode>"
-    echo "  1: Performance Mode (Forces AC behavior on Battery)"
+    echo "  1: Performance Mode"
     echo "  2: Balanced Mode"
     echo "  3: Powersave Mode"
     exit 1
