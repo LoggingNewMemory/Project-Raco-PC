@@ -15,7 +15,7 @@
 
 set -e
 
-SCRIPT_VERSION="1.3"
+SCRIPT_VERSION="1.2"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
@@ -109,10 +109,33 @@ send_notification() {
     fi
 }
 
+# --- NEW: SYNC WITH POWER-PROFILES-DAEMON ---
+sync_ppd() {
+    local target_mode="$1"
+    
+    # Only proceed if powerprofilesctl exists and the service is running
+    if command -v powerprofilesctl &>/dev/null && systemctl is-active --quiet power-profiles-daemon; then
+        
+        # Map our internal modes to PPD standard names
+        local ppd_profile=""
+        case "$target_mode" in
+            "performance") ppd_profile="performance" ;;
+            "balanced")    ppd_profile="balanced" ;;
+            "powersave")   ppd_profile="power-saver" ;; # PPD uses 'power-saver', not 'powersave'
+        esac
+
+        if [ -n "$ppd_profile" ]; then
+            echo "   -> Syncing power-profiles-daemon to '$ppd_profile'..."
+            # Try to set the profile. Some devices don't support 'performance' in PPD, so we suppress errors.
+            powerprofilesctl set "$ppd_profile" 2>/dev/null || echo "      (Note: PPD profile '$ppd_profile' unavailable on this hardware)"
+        fi
+    fi
+}
+
 # --- CRITICAL: STOP CONFLICTING SERVICES ---
 stop_conflicts() {
     echo "Checking for conflicting power managers..."
-    # power-profiles-daemon has been removed from this list as per update 1.3
+    # power-profiles-daemon is EXCLUDED so we can sync with it
     for service in tlp auto-cpufreq thermald; do
         if systemctl is-active --quiet "$service"; then
             echo "⚠️  Stopping $service to prevent interference..."
@@ -124,7 +147,6 @@ stop_conflicts() {
 restart_services() {
     echo "🔄 Restoring power management services..."
     # Attempt to start standard power managers if they exist
-    # power-profiles-daemon removed from restart logic as it is no longer stopped
     for service in tlp auto-cpufreq thermald; do
         # Check if service exists before trying to start
         if systemctl list-unit-files "$service.service" &>/dev/null; then
@@ -305,6 +327,7 @@ optimize_gpu() {
 ##########################################
 
 set_performance() {
+    sync_ppd "performance"
     set_cpu_governor "performance"
     set_cpu_epp "performance"
     set_cpu_boost 1
@@ -313,6 +336,7 @@ set_performance() {
 }
 
 set_balanced() {
+    sync_ppd "balanced"
     set_cpu_governor "schedutil"
     set_cpu_epp "balance_performance"
     set_cpu_boost 1
@@ -321,6 +345,7 @@ set_balanced() {
 }
 
 set_powersave() {
+    sync_ppd "powersave"
     set_cpu_governor "powersave"
     set_cpu_epp "power"
     set_cpu_boost 0
@@ -382,5 +407,8 @@ echo "  CPU Vendor: $CPU_VENDOR"
 echo "  Laptop Mode: $(sysctl -n vm.laptop_mode) (0=Force AC, >0=Battery Mode)"
 echo "  ASPM Policy: $(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || echo N/A)"
 echo "  Queue Disc: $(sysctl -n net.core.default_qdisc)"
+if command -v powerprofilesctl &>/dev/null; then
+    echo "  PPD Profile: $(powerprofilesctl get)"
+fi
 
 exit 0
