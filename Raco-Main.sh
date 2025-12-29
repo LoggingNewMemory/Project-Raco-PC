@@ -15,7 +15,7 @@
 
 set -e
 
-SCRIPT_VERSION="1.2"
+SCRIPT_VERSION="1.3"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
@@ -112,8 +112,8 @@ send_notification() {
 # --- CRITICAL: STOP CONFLICTING SERVICES ---
 stop_conflicts() {
     echo "Checking for conflicting power managers..."
-    # These services monitor the battery state and WILL undo our tweaks if left running
-    for service in tlp power-profiles-daemon auto-cpufreq thermald; do
+    # power-profiles-daemon has been removed from this list as per update 1.3
+    for service in tlp auto-cpufreq thermald; do
         if systemctl is-active --quiet "$service"; then
             echo "⚠️  Stopping $service to prevent interference..."
             systemctl stop "$service" 2>/dev/null || true
@@ -124,7 +124,8 @@ stop_conflicts() {
 restart_services() {
     echo "🔄 Restoring power management services..."
     # Attempt to start standard power managers if they exist
-    for service in power-profiles-daemon tlp auto-cpufreq thermald; do
+    # power-profiles-daemon removed from restart logic as it is no longer stopped
+    for service in tlp auto-cpufreq thermald; do
         # Check if service exists before trying to start
         if systemctl list-unit-files "$service.service" &>/dev/null; then
             if ! systemctl is-active --quiet "$service"; then
