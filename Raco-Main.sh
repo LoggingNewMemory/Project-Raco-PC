@@ -15,7 +15,7 @@
 
 set -e
 
-SCRIPT_VERSION="1.2"
+SCRIPT_VERSION="1.4"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
@@ -109,25 +109,32 @@ send_notification() {
     fi
 }
 
-# --- NEW: SYNC WITH POWER-PROFILES-DAEMON ---
+# --- UPDATED: SYNC WITH POWER-PROFILES-DAEMON ---
 sync_ppd() {
     local target_mode="$1"
     
-    # Only proceed if powerprofilesctl exists and the service is running
+    # Check if PPD is installed and running
     if command -v powerprofilesctl &>/dev/null && systemctl is-active --quiet power-profiles-daemon; then
         
-        # Map our internal modes to PPD standard names
         local ppd_profile=""
         case "$target_mode" in
             "performance") ppd_profile="performance" ;;
             "balanced")    ppd_profile="balanced" ;;
-            "powersave")   ppd_profile="power-saver" ;; # PPD uses 'power-saver', not 'powersave'
+            "powersave")   ppd_profile="power-saver" ;; # PPD uses 'power-saver'
         esac
 
         if [ -n "$ppd_profile" ]; then
-            echo "   -> Syncing power-profiles-daemon to '$ppd_profile'..."
-            # Try to set the profile. Some devices don't support 'performance' in PPD, so we suppress errors.
-            powerprofilesctl set "$ppd_profile" 2>/dev/null || echo "      (Note: PPD profile '$ppd_profile' unavailable on this hardware)"
+            echo "   -> Attempting to sync power-profiles-daemon to '$ppd_profile'..."
+            
+            # Try to set the profile.
+            # If it FAILS (e.g. "placeholder" driver issue), we STOP PPD entirely.
+            if ! powerprofilesctl set "$ppd_profile" 2>/dev/null; then
+                 echo "      ⚠️ PPD rejected '$ppd_profile' (Hardware likely unsupported)."
+                 echo "      🛑 Stopping power-profiles-daemon to prevent conflicts..."
+                 systemctl stop power-profiles-daemon
+            else
+                 echo "      ✅ PPD sync successful."
+            fi
         fi
     fi
 }
@@ -135,20 +142,28 @@ sync_ppd() {
 # --- CRITICAL: STOP CONFLICTING SERVICES ---
 stop_conflicts() {
     echo "Checking for conflicting power managers..."
-    # power-profiles-daemon is EXCLUDED so we can sync with it
+    
+    # 1. Stop TLP/Auto-cpufreq/Thermald first
     for service in tlp auto-cpufreq thermald; do
         if systemctl is-active --quiet "$service"; then
             echo "⚠️  Stopping $service to prevent interference..."
             systemctl stop "$service" 2>/dev/null || true
         fi
     done
+
+    # 2. Restart PPD to clear stale states (unless we killed it previously intentionally)
+    # This ensures PPD has a fresh chance to detect hardware before we try to sync.
+    if systemctl is-active --quiet power-profiles-daemon; then
+        echo "🔄 Refreshing power-profiles-daemon..."
+        systemctl restart power-profiles-daemon
+        sleep 1 # Wait for daemon to initialize
+    fi
 }
 
 restart_services() {
-    echo "🔄 Restoring power management services..."
-    # Attempt to start standard power managers if they exist
+    # Not used in active modes, but good for cleanup if needed
+    echo "🔄 Restoring standard power management services..."
     for service in tlp auto-cpufreq thermald; do
-        # Check if service exists before trying to start
         if systemctl list-unit-files "$service.service" &>/dev/null; then
             if ! systemctl is-active --quiet "$service"; then
                 echo "   -> Starting $service..."
@@ -407,8 +422,10 @@ echo "  CPU Vendor: $CPU_VENDOR"
 echo "  Laptop Mode: $(sysctl -n vm.laptop_mode) (0=Force AC, >0=Battery Mode)"
 echo "  ASPM Policy: $(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || echo N/A)"
 echo "  Queue Disc: $(sysctl -n net.core.default_qdisc)"
-if command -v powerprofilesctl &>/dev/null; then
-    echo "  PPD Profile: $(powerprofilesctl get)"
+if systemctl is-active --quiet power-profiles-daemon; then
+    echo "  PPD Status: Active ($(powerprofilesctl get))"
+else
+    echo "  PPD Status: Stopped (Manual Override)"
 fi
 
 exit 0
