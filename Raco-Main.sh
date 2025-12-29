@@ -8,14 +8,13 @@
 #   sudo ./Raco-Main.sh 3      (For Powersave Mode)
 # ==============================================================================
 
-
 ##############################
 # SCRIPT INITIALIZATION
 ##############################
 
 set -e
 
-SCRIPT_VERSION="1.4"
+SCRIPT_VERSION="1.5-Enhanced"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
@@ -162,19 +161,6 @@ stop_conflicts() {
     fi
 }
 
-restart_services() {
-    echo "🔄 Restoring standard power management services..."
-    for service in tlp auto-cpufreq thermald; do
-        if systemctl list-unit-files "$service.service" &>/dev/null; then
-            if ! systemctl is-active --quiet "$service"; then
-                echo "   -> Starting $service..."
-                systemctl start "$service" 2>/dev/null || true
-            fi
-        fi
-    done
-}
-
-
 ##########################################
 # HARDWARE DETECTION
 ##########################################
@@ -224,16 +210,12 @@ set_cpu_boost() {
 
 lock_cpu_frequencies() {
     local target="$1"
-
     echo "   -> Locking CPU frequencies to $target..."
-
     for path in /sys/devices/system/cpu/cpufreq/policy*; do
         if [ -d "$path" ]; then
             chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
-
             local max_freq=$(cat "$path/cpuinfo_max_freq")
             local min_freq=$(cat "$path/cpuinfo_min_freq")
-
             if [ "$target" == "max" ]; then
                 write_to_sysfs "$max_freq" "$path/scaling_max_freq"
                 write_to_sysfs "$max_freq" "$path/scaling_min_freq"
@@ -241,7 +223,6 @@ lock_cpu_frequencies() {
                 write_to_sysfs "$min_freq" "$path/scaling_min_freq"
                 write_to_sysfs "$min_freq" "$path/scaling_max_freq"
             fi
-
             chmod 444 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
         fi
     done
@@ -252,20 +233,49 @@ unlock_cpu_frequencies() {
     for path in /sys/devices/system/cpu/cpufreq/policy*; do
         if [ -d "$path" ]; then
             chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
-            
             local max_freq=$(cat "$path/cpuinfo_max_freq")
             local min_freq=$(cat "$path/cpuinfo_min_freq")
-
             write_to_sysfs "$max_freq" "$path/scaling_max_freq"
             write_to_sysfs "$min_freq" "$path/scaling_min_freq"
         fi
     done
 }
 
+##########################################
+# KERNEL & SYSTEM TWEAKS (Ported from Raco.sh)
+##########################################
 
-##########################################
-# "FAKE AC" & SYSTEM TWEAKS
-##########################################
+apply_raco_common_tweaks() {
+    # Ported from performance_basic() in Raco.sh
+    
+    # IO Block Tweaks
+    for dir in /sys/block/*; do
+        write_to_sysfs "0" "$dir/queue/iostats"
+        write_to_sysfs "0" "$dir/queue/add_random"
+        write_to_sysfs "32" "$dir/queue/read_ahead_kb"
+        write_to_sysfs "32" "$dir/queue/nr_requests"
+    done
+
+    # Kernel Scheduler Tweaks
+    apply_sysctl "kernel.perf_cpu_time_max_percent" "3"
+    apply_sysctl "kernel.sched_schedstats" "0"
+    apply_sysctl "kernel.sched_autogroup_enabled" "0"
+    apply_sysctl "kernel.sched_child_runs_first" "1"
+    apply_sysctl "kernel.sched_nr_migrate" "32"
+    apply_sysctl "kernel.sched_migration_cost_ns" "50000"
+    apply_sysctl "kernel.split_lock_mitigate" "0"
+
+    # VM Tweaks
+    apply_sysctl "vm.page-cluster" "0"
+    apply_sysctl "vm.stat_interval" "15"
+    apply_sysctl "vm.compaction_proactiveness" "0"
+    
+    # Sched Features (DebugFS)
+    if [ -d "/sys/kernel/debug/sched" ]; then
+        echo "NEXT_BUDDY" > /sys/kernel/debug/sched_features 2>/dev/null || true
+        echo "NO_TTWU_QUEUE" > /sys/kernel/debug/sched_features 2>/dev/null || true
+    fi
+}
 
 set_laptop_mode_tweaks() {
     local mode="$1"
@@ -286,6 +296,8 @@ set_laptop_mode_tweaks() {
         apply_sysctl "vm.dirty_background_ratio" "10"
         apply_sysctl "vm.max_map_count" "2147483642"
         apply_sysctl "kernel.nmi_watchdog" "0"
+        
+        apply_raco_common_tweaks
 
     elif [ "$mode" == "balanced" ]; then
         apply_sysctl "vm.laptop_mode" "2" 
@@ -294,6 +306,7 @@ set_laptop_mode_tweaks() {
         apply_sysctl "vm.swappiness" "60"
         apply_sysctl "vm.vfs_cache_pressure" "100"
         apply_sysctl "kernel.nmi_watchdog" "1"
+        apply_sysctl "kernel.split_lock_mitigate" "1"
 
     else # powersave
         apply_sysctl "vm.laptop_mode" "5"
@@ -307,6 +320,7 @@ set_laptop_mode_tweaks() {
         
         apply_sysctl "vm.swappiness" "60"
         apply_sysctl "vm.dirty_writeback_centisecs" "1500"
+        apply_sysctl "vm.vfs_cache_pressure" "100"
     fi
 }
 
@@ -319,8 +333,11 @@ set_network_tweaks() {
         apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
         apply_sysctl "net.ipv4.tcp_fastopen" "3"
         apply_sysctl "net.ipv4.tcp_window_scaling" "1"
+        apply_sysctl "net.ipv4.tcp_low_latency" "1"
+        apply_sysctl "net.ipv4.tcp_sack" "1"
     else
         apply_sysctl "net.ipv4.tcp_congestion_control" "cubic"
+        apply_sysctl "net.ipv4.tcp_low_latency" "0"
     fi
 }
 
