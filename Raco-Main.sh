@@ -222,6 +222,53 @@ set_cpu_boost() {
     fi
 }
 
+# --- NEW: FREQUENCY LOCKING (Ported from Raco.sh) ---
+lock_cpu_frequencies() {
+    local target="$1" # "max" or "min"
+
+    echo "   -> Locking CPU frequencies to $target..."
+
+    for path in /sys/devices/system/cpu/cpufreq/policy*; do
+        if [ -d "$path" ]; then
+            # Ensure we can write first (Unlock)
+            chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
+
+            local max_freq=$(cat "$path/cpuinfo_max_freq")
+            local min_freq=$(cat "$path/cpuinfo_min_freq")
+
+            if [ "$target" == "max" ]; then
+                # Pin to MAX: Raise floor first, then ceiling
+                write_to_sysfs "$max_freq" "$path/scaling_max_freq"
+                write_to_sysfs "$max_freq" "$path/scaling_min_freq"
+            elif [ "$target" == "min" ]; then
+                # Pin to MIN: Lower ceiling first, then floor
+                write_to_sysfs "$min_freq" "$path/scaling_min_freq"
+                write_to_sysfs "$min_freq" "$path/scaling_max_freq"
+            fi
+
+            # Lock it (Read-only) to prevent interference
+            chmod 444 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
+        fi
+    done
+}
+
+unlock_cpu_frequencies() {
+    echo "   -> Unlocking CPU frequencies..."
+    for path in /sys/devices/system/cpu/cpufreq/policy*; do
+        if [ -d "$path" ]; then
+            # Restore write permissions
+            chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
+            
+            local max_freq=$(cat "$path/cpuinfo_max_freq")
+            local min_freq=$(cat "$path/cpuinfo_min_freq")
+
+            # Restore full range
+            write_to_sysfs "$max_freq" "$path/scaling_max_freq"
+            write_to_sysfs "$min_freq" "$path/scaling_min_freq"
+        fi
+    done
+}
+
 
 ##########################################
 # "FAKE AC" & SYSTEM TWEAKS
@@ -232,20 +279,15 @@ set_laptop_mode_tweaks() {
 
     if [ "$mode" == "performance" ]; then
         # --- THE "FAKE AC" LOGIC ---
-        # 1. Disable "Laptop Mode" - Kernel behaves as if plugged in (spins up disks, aggressive flushes)
         apply_sysctl "vm.laptop_mode" "0" 
-        
-        # 2. Force PCIe Links to stay fully powered (Fixes battery micro-stutters)
         write_to_sysfs "performance" "/sys/module/pcie_aspm/parameters/policy"
         
-        # 3. Disable WiFi Power Save (Fixes ping spikes on battery)
         for iface in $(ls /sys/class/net | grep -E 'wlan|wlp|wlx'); do
             if command -v iw &>/dev/null; then
                 iw dev "$iface" set power_save off 2>/dev/null || true
             fi
         done
 
-        # 4. Standard VM Perf Tweaks
         apply_sysctl "vm.swappiness" "10"
         apply_sysctl "vm.vfs_cache_pressure" "50"
         apply_sysctl "vm.dirty_ratio" "40"
@@ -254,7 +296,7 @@ set_laptop_mode_tweaks() {
         apply_sysctl "kernel.nmi_watchdog" "0"
 
     elif [ "$mode" == "balanced" ]; then
-        apply_sysctl "vm.laptop_mode" "2" # Moderate power saving
+        apply_sysctl "vm.laptop_mode" "2" 
         write_to_sysfs "default" "/sys/module/pcie_aspm/parameters/policy"
         
         apply_sysctl "vm.swappiness" "60"
@@ -262,10 +304,9 @@ set_laptop_mode_tweaks() {
         apply_sysctl "kernel.nmi_watchdog" "1"
 
     else # powersave
-        apply_sysctl "vm.laptop_mode" "5" # Aggressive power saving
+        apply_sysctl "vm.laptop_mode" "5"
         write_to_sysfs "powersave" "/sys/module/pcie_aspm/parameters/policy"
         
-        # Re-enable WiFi Power Save
         for iface in $(ls /sys/class/net | grep -E 'wlan|wlp|wlx'); do
             if command -v iw &>/dev/null; then
                 iw dev "$iface" set power_save on 2>/dev/null || true
@@ -330,7 +371,6 @@ optimize_gpu() {
     if [ "$NVIDIA_GPU_FOUND" -eq 1 ]; then
         if [ "$mode" == "performance" ]; then
             nvidia-smi -pm 1 >/dev/null
-            # Lock clocks if possible (requires knowing your specific GPU max clocks, skipping unsafe locks)
             echo "✓ Nvidia GPU: Persistence Mode Enabled"
         fi
     fi
@@ -346,6 +386,7 @@ set_performance() {
     set_cpu_governor "performance"
     set_cpu_epp "performance"
     set_cpu_boost 1
+    lock_cpu_frequencies "max"  # Lock to MAX
     set_laptop_mode_tweaks "performance"
     set_network_tweaks "performance"
 }
@@ -355,6 +396,7 @@ set_balanced() {
     set_cpu_governor "schedutil"
     set_cpu_epp "balance_performance"
     set_cpu_boost 1
+    unlock_cpu_frequencies      # Unlock for scaling
     set_laptop_mode_tweaks "balanced"
     set_network_tweaks "balanced"
 }
@@ -364,6 +406,7 @@ set_powersave() {
     set_cpu_governor "powersave"
     set_cpu_epp "power"
     set_cpu_boost 0
+    lock_cpu_frequencies "min"  # Lock to MIN
     set_laptop_mode_tweaks "powersave"
     set_network_tweaks "powersave"
 }
@@ -421,7 +464,6 @@ echo "--------------------------------"
 echo "  CPU Vendor: $CPU_VENDOR"
 echo "  Laptop Mode: $(sysctl -n vm.laptop_mode) (0=Force AC, >0=Battery Mode)"
 echo "  ASPM Policy: $(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || echo N/A)"
-echo "  Queue Disc: $(sysctl -n net.core.default_qdisc)"
 if systemctl is-active --quiet power-profiles-daemon; then
     echo "  PPD Status: Active ($(powerprofilesctl get))"
 else
