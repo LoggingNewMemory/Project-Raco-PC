@@ -19,7 +19,6 @@ SCRIPT_VERSION="1.4"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
-# Check for root privileges
 if [ "$(id -u)" -ne 0 ]; then
     echo "❌ Error: This script must be run as root."
     echo "Please try again using 'sudo'."
@@ -44,7 +43,6 @@ check_for_updates() {
 
     echo "Checking for updates..."
     
-    # Capture the current owner and group of the script BEFORE updating
     local current_user
     local current_group
     current_user=$(stat -c '%U' "$SCRIPT_PATH")
@@ -52,6 +50,7 @@ check_for_updates() {
 
     local temp_file
     temp_file=$(mktemp)
+    
     if ! curl -sL "$SCRIPT_URL" -o "$temp_file"; then
         echo "❌ Error: Failed to download updates."
         rm -f "$temp_file"
@@ -62,19 +61,30 @@ check_for_updates() {
         echo "✅ You are using the latest version ($SCRIPT_VERSION)."
         rm -f "$temp_file"
     else
-        echo "🔄 New version found! Updating..."
-        if mv "$temp_file" "$SCRIPT_PATH"; then
-            chmod +x "$SCRIPT_PATH"
-            
-            # Restore the original ownership
-            chown "${current_user}:${current_group}" "$SCRIPT_PATH"
-
-            echo "✅ Script updated. Please re-run the script to load new changes."
-            exit 0
+        echo "🔍 Changes detected:"
+        echo "--------------------------------------------------------"
+        diff --color=always -u "$SCRIPT_PATH" "$temp_file" || true
+        echo "--------------------------------------------------------"
+        echo ""
+        
+        read -p "Apply these updates? [y/n]: " -n 1 -r
+        echo ""
+        
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo "🔄 Updating..."
+            if mv "$temp_file" "$SCRIPT_PATH"; then
+                chmod +x "$SCRIPT_PATH"
+                chown "${current_user}:${current_group}" "$SCRIPT_PATH"
+                echo "✅ Script updated. Please re-run the script to load new changes."
+                exit 0
+            else
+                echo "❌ Error: Update failed."
+                rm -f "$temp_file"
+                exit 1
+            fi
         else
-            echo "❌ Error: Update failed."
+            echo "Update cancelled."
             rm -f "$temp_file"
-            exit 1
         fi
     fi
 }
@@ -109,25 +119,21 @@ send_notification() {
     fi
 }
 
-# --- UPDATED: SYNC WITH POWER-PROFILES-DAEMON ---
 sync_ppd() {
     local target_mode="$1"
     
-    # Check if PPD is installed and running
     if command -v powerprofilesctl &>/dev/null && systemctl is-active --quiet power-profiles-daemon; then
         
         local ppd_profile=""
         case "$target_mode" in
             "performance") ppd_profile="performance" ;;
             "balanced")    ppd_profile="balanced" ;;
-            "powersave")   ppd_profile="power-saver" ;; # PPD uses 'power-saver'
+            "powersave")   ppd_profile="power-saver" ;;
         esac
 
         if [ -n "$ppd_profile" ]; then
             echo "   -> Attempting to sync power-profiles-daemon to '$ppd_profile'..."
             
-            # Try to set the profile.
-            # If it FAILS (e.g. "placeholder" driver issue), we STOP PPD entirely.
             if ! powerprofilesctl set "$ppd_profile" 2>/dev/null; then
                  echo "      ⚠️ PPD rejected '$ppd_profile' (Hardware likely unsupported)."
                  echo "      🛑 Stopping power-profiles-daemon to prevent conflicts..."
@@ -139,11 +145,9 @@ sync_ppd() {
     fi
 }
 
-# --- CRITICAL: STOP CONFLICTING SERVICES ---
 stop_conflicts() {
     echo "Checking for conflicting power managers..."
     
-    # 1. Stop TLP/Auto-cpufreq/Thermald first
     for service in tlp auto-cpufreq thermald; do
         if systemctl is-active --quiet "$service"; then
             echo "⚠️  Stopping $service to prevent interference..."
@@ -151,17 +155,14 @@ stop_conflicts() {
         fi
     done
 
-    # 2. Restart PPD to clear stale states (unless we killed it previously intentionally)
-    # This ensures PPD has a fresh chance to detect hardware before we try to sync.
     if systemctl is-active --quiet power-profiles-daemon; then
         echo "🔄 Refreshing power-profiles-daemon..."
         systemctl restart power-profiles-daemon
-        sleep 1 # Wait for daemon to initialize
+        sleep 1
     fi
 }
 
 restart_services() {
-    # Not used in active modes, but good for cleanup if needed
     echo "🔄 Restoring standard power management services..."
     for service in tlp auto-cpufreq thermald; do
         if systemctl list-unit-files "$service.service" &>/dev/null; then
@@ -211,9 +212,8 @@ set_cpu_epp() {
 }
 
 set_cpu_boost() {
-    local state="$1" # 1=Enable, 0=Disable
+    local state="$1" 
     if [ "$CPU_VENDOR" == "INTEL" ]; then
-        # 0 = Turbo Enabled, 1 = Turbo Disabled
         local val=$((1-state))
         write_to_sysfs "$val" "/sys/devices/system/cpu/intel_pstate/no_turbo"
     fi
@@ -222,31 +222,26 @@ set_cpu_boost() {
     fi
 }
 
-# --- NEW: FREQUENCY LOCKING (Ported from Raco.sh) ---
 lock_cpu_frequencies() {
-    local target="$1" # "max" or "min"
+    local target="$1"
 
     echo "   -> Locking CPU frequencies to $target..."
 
     for path in /sys/devices/system/cpu/cpufreq/policy*; do
         if [ -d "$path" ]; then
-            # Ensure we can write first (Unlock)
             chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
 
             local max_freq=$(cat "$path/cpuinfo_max_freq")
             local min_freq=$(cat "$path/cpuinfo_min_freq")
 
             if [ "$target" == "max" ]; then
-                # Pin to MAX: Raise floor first, then ceiling
                 write_to_sysfs "$max_freq" "$path/scaling_max_freq"
                 write_to_sysfs "$max_freq" "$path/scaling_min_freq"
             elif [ "$target" == "min" ]; then
-                # Pin to MIN: Lower ceiling first, then floor
                 write_to_sysfs "$min_freq" "$path/scaling_min_freq"
                 write_to_sysfs "$min_freq" "$path/scaling_max_freq"
             fi
 
-            # Lock it (Read-only) to prevent interference
             chmod 444 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
         fi
     done
@@ -256,13 +251,11 @@ unlock_cpu_frequencies() {
     echo "   -> Unlocking CPU frequencies..."
     for path in /sys/devices/system/cpu/cpufreq/policy*; do
         if [ -d "$path" ]; then
-            # Restore write permissions
             chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
             
             local max_freq=$(cat "$path/cpuinfo_max_freq")
             local min_freq=$(cat "$path/cpuinfo_min_freq")
 
-            # Restore full range
             write_to_sysfs "$max_freq" "$path/scaling_max_freq"
             write_to_sysfs "$min_freq" "$path/scaling_min_freq"
         fi
@@ -275,10 +268,9 @@ unlock_cpu_frequencies() {
 ##########################################
 
 set_laptop_mode_tweaks() {
-    local mode="$1" # performance, balanced, powersave
+    local mode="$1"
 
     if [ "$mode" == "performance" ]; then
-        # --- THE "FAKE AC" LOGIC ---
         apply_sysctl "vm.laptop_mode" "0" 
         write_to_sysfs "performance" "/sys/module/pcie_aspm/parameters/policy"
         
@@ -340,7 +332,6 @@ set_network_tweaks() {
 optimize_gpu() {
     local mode="$1"
     
-    # INTEL
     if [ "$INTEL_GPU_FOUND" -eq 1 ]; then
         for gt_dir in /sys/class/drm/card*/gt/gt* /sys/class/drm/card*; do
              if [ -r "$gt_dir/gt_max_freq_mhz" ]; then
@@ -357,7 +348,6 @@ optimize_gpu() {
         done
     fi
 
-    # AMD
     if [ "$AMD_GPU_FOUND" -eq 1 ]; then
         local dpm_level="auto"
         if [ "$mode" == "performance" ]; then dpm_level="high"; fi
@@ -367,7 +357,6 @@ optimize_gpu() {
         done
     fi
 
-    # NVIDIA
     if [ "$NVIDIA_GPU_FOUND" -eq 1 ]; then
         if [ "$mode" == "performance" ]; then
             nvidia-smi -pm 1 >/dev/null
@@ -386,7 +375,7 @@ set_performance() {
     set_cpu_governor "performance"
     set_cpu_epp "performance"
     set_cpu_boost 1
-    lock_cpu_frequencies "max"  # Lock to MAX
+    lock_cpu_frequencies "max"
     set_laptop_mode_tweaks "performance"
     set_network_tweaks "performance"
 }
@@ -396,7 +385,7 @@ set_balanced() {
     set_cpu_governor "schedutil"
     set_cpu_epp "balance_performance"
     set_cpu_boost 1
-    unlock_cpu_frequencies      # Unlock for scaling
+    unlock_cpu_frequencies
     set_laptop_mode_tweaks "balanced"
     set_network_tweaks "balanced"
 }
@@ -406,7 +395,7 @@ set_powersave() {
     set_cpu_governor "powersave"
     set_cpu_epp "power"
     set_cpu_boost 0
-    lock_cpu_frequencies "min"  # Lock to MIN
+    lock_cpu_frequencies "min"
     set_laptop_mode_tweaks "powersave"
     set_network_tweaks "powersave"
 }
@@ -428,8 +417,6 @@ fi
 
 MODE=$1
 detect_hardware
-
-# Always stop conflicting services before applying our own modes
 stop_conflicts
 
 case $MODE in
