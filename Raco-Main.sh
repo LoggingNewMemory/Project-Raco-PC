@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_VERSION="1.6.1"
+SCRIPT_VERSION="1.7"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
