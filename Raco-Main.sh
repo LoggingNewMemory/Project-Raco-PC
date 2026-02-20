@@ -1,26 +1,13 @@
 #!/bin/bash
 
-# ==============================================================================
-# Usage:
-#   sudo ./Raco-Main.sh        (Shows Version & Checks for updates)
-#   sudo ./Raco-Main.sh 1      (For Performance Mode)
-#   sudo ./Raco-Main.sh 2      (For Balanced Mode)
-#   sudo ./Raco-Main.sh 3      (For Powersave Mode)
-# ==============================================================================
-
-##############################
-# SCRIPT INITIALIZATION
-##############################
-
 set -e
 
-SCRIPT_VERSION="1.6"
+SCRIPT_VERSION="1.6.1"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "❌ Error: This script must be run as root."
-    echo "Please try again using 'sudo'."
     exit 1
 fi
 
@@ -29,7 +16,6 @@ show_header() {
     echo "   Project Raco PC - Linux Power Optimizer"
     echo "   Version: $SCRIPT_VERSION"
     echo "========================================================"
-    echo ""
 }
 
 check_for_updates() {
@@ -40,8 +26,6 @@ check_for_updates() {
         return
     fi
 
-    echo "Checking for updates..."
-    
     local current_user
     local current_group
     current_user=$(stat -c '%U' "$SCRIPT_PATH")
@@ -57,24 +41,16 @@ check_for_updates() {
     fi
     
     if cmp -s "$SCRIPT_PATH" "$temp_file"; then
-        echo "✅ You are using the latest version ($SCRIPT_VERSION)."
         rm -f "$temp_file"
     else
-        echo "🔍 Changes detected:"
-        echo "--------------------------------------------------------"
         diff --color=always -u "$SCRIPT_PATH" "$temp_file" || true
-        echo "--------------------------------------------------------"
-        echo ""
-        
         read -p "Apply these updates? [y/n]: " -n 1 -r
         echo ""
         
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "🔄 Updating..."
             if mv "$temp_file" "$SCRIPT_PATH"; then
                 chmod +x "$SCRIPT_PATH"
                 chown "${current_user}:${current_group}" "$SCRIPT_PATH"
-                echo "✅ Script updated. Please re-run the script to load new changes."
                 exit 0
             else
                 echo "❌ Error: Update failed."
@@ -82,15 +58,10 @@ check_for_updates() {
                 exit 1
             fi
         else
-            echo "Update cancelled."
             rm -f "$temp_file"
         fi
     fi
 }
-
-##############################
-# HELPER FUNCTIONS
-##############################
 
 write_to_sysfs() {
     local value="$1"
@@ -131,39 +102,25 @@ sync_ppd() {
         esac
 
         if [ -n "$ppd_profile" ]; then
-            echo "   -> Attempting to sync power-profiles-daemon to '$ppd_profile'..."
-            
             if ! powerprofilesctl set "$ppd_profile" 2>/dev/null; then
-                 echo "      ⚠️ PPD rejected '$ppd_profile' (Hardware likely unsupported)."
-                 echo "      🛑 Stopping power-profiles-daemon to prevent conflicts..."
                  systemctl stop power-profiles-daemon
-            else
-                 echo "      ✅ PPD sync successful."
             fi
         fi
     fi
 }
 
 stop_conflicts() {
-    echo "Checking for conflicting power managers..."
-    
     for service in tlp auto-cpufreq thermald; do
         if systemctl is-active --quiet "$service"; then
-            echo "⚠️  Stopping $service to prevent interference..."
             systemctl stop "$service" 2>/dev/null || true
         fi
     done
 
     if systemctl is-active --quiet power-profiles-daemon; then
-        echo "🔄 Refreshing power-profiles-daemon..."
         systemctl restart power-profiles-daemon
         sleep 1
     fi
 }
-
-##########################################
-# HARDWARE DETECTION
-##########################################
 
 detect_hardware() {
     if grep -q "GenuineIntel" /proc/cpuinfo; then CPU_VENDOR="INTEL"; fi
@@ -177,10 +134,6 @@ detect_hardware() {
     if ls /sys/class/drm/card*/device/power_dpm_state &>/dev/null 2>&1; then AMD_GPU_FOUND=1; fi
     if command -v nvidia-smi &>/dev/null; then NVIDIA_GPU_FOUND=1; fi
 }
-
-##########################################
-# NEW PERIPHERAL & STORAGE TWEAKS
-##########################################
 
 set_sata_alpm() {
     local policy="$1"
@@ -200,15 +153,11 @@ set_audio_powersave() {
 }
 
 set_usb_autosuspend() {
-    local state="$1" # "on" (disabled) or "auto" (enabled)
+    local state="$1"
     for dev in /sys/bus/usb/devices/*/power/control; do
         write_to_sysfs "$state" "$dev"
     done
 }
-
-##########################################
-# CPU OPTIMIZATION
-##########################################
 
 set_cpu_governor() {
     local gov="$1"
@@ -237,7 +186,6 @@ set_cpu_boost() {
 
 lock_cpu_frequencies() {
     local target="$1"
-    echo "   -> Locking CPU frequencies to $target..."
     for path in /sys/devices/system/cpu/cpufreq/policy*; do
         if [ -d "$path" ]; then
             chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
@@ -256,7 +204,6 @@ lock_cpu_frequencies() {
 }
 
 unlock_cpu_frequencies() {
-    echo "   -> Unlocking CPU frequencies..."
     for path in /sys/devices/system/cpu/cpufreq/policy*; do
         if [ -d "$path" ]; then
             chmod 644 "$path/scaling_max_freq" "$path/scaling_min_freq" 2>/dev/null
@@ -268,12 +215,7 @@ unlock_cpu_frequencies() {
     done
 }
 
-##########################################
-# KERNEL & SYSTEM TWEAKS
-##########################################
-
 apply_raco_common_tweaks() {
-    # IO Block Tweaks
     for dir in /sys/block/*; do
         write_to_sysfs "0" "$dir/queue/iostats"
         write_to_sysfs "0" "$dir/queue/add_random"
@@ -281,7 +223,6 @@ apply_raco_common_tweaks() {
         write_to_sysfs "32" "$dir/queue/nr_requests"
     done
 
-    # Kernel Scheduler Tweaks
     apply_sysctl "kernel.perf_cpu_time_max_percent" "3"
     apply_sysctl "kernel.sched_schedstats" "0"
     apply_sysctl "kernel.sched_autogroup_enabled" "0"
@@ -289,15 +230,11 @@ apply_raco_common_tweaks() {
     apply_sysctl "kernel.sched_nr_migrate" "32"
     apply_sysctl "kernel.sched_migration_cost_ns" "50000"
     apply_sysctl "kernel.split_lock_mitigate" "0"
-    
     apply_sysctl "kernel.watchdog" "0"
-
-    # VM Tweaks
     apply_sysctl "vm.page-cluster" "0"
     apply_sysctl "vm.stat_interval" "15"
     apply_sysctl "vm.compaction_proactiveness" "0"
     
-    # Sched Features (DebugFS)
     if [ -d "/sys/kernel/debug/sched" ]; then
         echo "NEXT_BUDDY" > /sys/kernel/debug/sched_features 2>/dev/null || true
         echo "NO_TTWU_QUEUE" > /sys/kernel/debug/sched_features 2>/dev/null || true
@@ -336,7 +273,7 @@ set_laptop_mode_tweaks() {
         apply_sysctl "kernel.split_lock_mitigate" "1"
         apply_sysctl "kernel.watchdog" "1"
 
-    else # powersave
+    else
         apply_sysctl "vm.laptop_mode" "5"
         write_to_sysfs "powersave" "/sys/module/pcie_aspm/parameters/policy"
         
@@ -350,7 +287,7 @@ set_laptop_mode_tweaks() {
         apply_sysctl "vm.dirty_writeback_centisecs" "1500"
         apply_sysctl "vm.vfs_cache_pressure" "100"
         apply_sysctl "kernel.nmi_watchdog" "0"
-        apply_sysctl "kernel.watchdog" "0" # Off in powersave to save wakeups
+        apply_sysctl "kernel.watchdog" "0"
     fi
 }
 
@@ -365,7 +302,6 @@ set_network_tweaks() {
         apply_sysctl "net.ipv4.tcp_window_scaling" "1"
         apply_sysctl "net.ipv4.tcp_low_latency" "1"
         apply_sysctl "net.ipv4.tcp_sack" "1"
-        
         apply_sysctl "net.ipv4.tcp_rmem" "4096 87380 16777216"
         apply_sysctl "net.ipv4.tcp_wmem" "4096 65536 16777216"
         apply_sysctl "net.core.rmem_max" "16777216"
@@ -384,10 +320,6 @@ set_network_tweaks() {
     fi
 }
 
-##########################################
-# GPU OPTIMIZATION
-##########################################
-
 optimize_gpu() {
     local mode="$1"
     
@@ -396,12 +328,20 @@ optimize_gpu() {
              if [ -r "$gt_dir/gt_max_freq_mhz" ]; then
                 local max=$(cat "$gt_dir/gt_max_freq_mhz")
                 local min=$(cat "$gt_dir/gt_min_freq_mhz" 2>/dev/null || echo 100)
+                local profile_path="/sys/class/drm/card*/device/power_profile"
+                
                 if [ "$mode" == "performance" ]; then
                     write_to_sysfs "$max" "$gt_dir/gt_min_freq_mhz"
                     write_to_sysfs "$max" "$gt_dir/gt_boost_freq_mhz"
+                    write_to_sysfs "high" "$profile_path"
+                elif [ "$mode" == "balanced" ]; then
+                    write_to_sysfs "$min" "$gt_dir/gt_min_freq_mhz"
+                    write_to_sysfs "$max" "$gt_dir/gt_boost_freq_mhz"
+                    write_to_sysfs "balanced" "$profile_path"
                 elif [ "$mode" == "powersave" ]; then
                     write_to_sysfs "$min" "$gt_dir/gt_min_freq_mhz"
                     write_to_sysfs "$min" "$gt_dir/gt_max_freq_mhz"
+                    write_to_sysfs "low" "$profile_path"
                 fi
              fi
         done
@@ -409,25 +349,43 @@ optimize_gpu() {
 
     if [ "$AMD_GPU_FOUND" -eq 1 ]; then
         local dpm_level="auto"
-        if [ "$mode" == "performance" ]; then dpm_level="high"; fi
-        if [ "$mode" == "powersave" ]; then dpm_level="low"; fi
+        local dpm_state="balanced"
+        local pp_mode="0"
+
+        if [ "$mode" == "performance" ]; then 
+            dpm_level="high"
+            dpm_state="performance"
+            pp_mode="1"
+        elif [ "$mode" == "powersave" ]; then 
+            dpm_level="low"
+            dpm_state="battery"
+            pp_mode="2"
+        fi
+
         for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
             write_to_sysfs "$dpm_level" "$card"
+        done
+        for card in /sys/class/drm/card*/device/power_dpm_state; do
+            write_to_sysfs "$dpm_state" "$card"
+        done
+        for card in /sys/class/drm/card*/device/pp_power_profile_mode; do
+            write_to_sysfs "$pp_mode" "$card"
         done
     fi
 
     if [ "$NVIDIA_GPU_FOUND" -eq 1 ]; then
+        nvidia-smi -pm 1 >/dev/null 2>&1
         if [ "$mode" == "performance" ]; then
-            nvidia-smi -pm 1 >/dev/null
-            echo "✓ Nvidia GPU: Persistence Mode Enabled"
+            nvidia-smi -rgc >/dev/null 2>&1
+            nvidia-smi -rmc >/dev/null 2>&1
+        elif [ "$mode" == "balanced" ]; then
+            nvidia-smi -rgc >/dev/null 2>&1
+            nvidia-smi -rmc >/dev/null 2>&1
+        elif [ "$mode" == "powersave" ]; then
+            nvidia-smi -lgc 300,900 >/dev/null 2>&1
         fi
     fi
 }
-
-
-##########################################
-# MODE WRAPPERS
-##########################################
 
 set_performance() {
     sync_ppd "performance"
@@ -437,10 +395,9 @@ set_performance() {
     lock_cpu_frequencies "max"
     set_laptop_mode_tweaks "performance"
     set_network_tweaks "performance"
-    
     set_sata_alpm "max_performance"
     set_audio_powersave 0
-    set_usb_autosuspend "on" # Disables autosuspend (keeps devices 'on')
+    set_usb_autosuspend "on" 
 }
 
 set_balanced() {
@@ -451,9 +408,8 @@ set_balanced() {
     unlock_cpu_frequencies
     set_laptop_mode_tweaks "balanced"
     set_network_tweaks "balanced"
-    
     set_sata_alpm "med_power_with_dipm"
-    set_audio_powersave 10 # 10 second idle timeout
+    set_audio_powersave 10 
     set_usb_autosuspend "auto"
 }
 
@@ -465,16 +421,10 @@ set_powersave() {
     lock_cpu_frequencies "min"
     set_laptop_mode_tweaks "powersave"
     set_network_tweaks "powersave"
-    
     set_sata_alpm "min_power"
-    set_audio_powersave 1 # 1 second idle timeout
+    set_audio_powersave 1 
     set_usb_autosuspend "auto"
 }
-
-
-##########################################
-# MAIN EXECUTION
-##########################################
 
 if [ -z "$1" ]; then
     show_header
@@ -515,17 +465,13 @@ case $MODE in
         ;;
 esac
 
-echo ""
-echo "--------------------------------"
-echo "        SYSTEM STATUS"
-echo "--------------------------------"
 echo "  CPU Vendor: $CPU_VENDOR"
-echo "  Laptop Mode: $(sysctl -n vm.laptop_mode) (0=Force AC, >0=Battery Mode)"
+echo "  Laptop Mode: $(sysctl -n vm.laptop_mode)"
 echo "  ASPM Policy: $(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || echo N/A)"
 if systemctl is-active --quiet power-profiles-daemon; then
     echo "  PPD Status: Active ($(powerprofilesctl get))"
 else
-    echo "  PPD Status: Stopped (Manual Override)"
+    echo "  PPD Status: Stopped"
 fi
 
 exit 0
