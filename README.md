@@ -1,5 +1,3 @@
-# HUGE WIP!!
-
 <img width="1280" height="720" alt="Banner" src="https://github.com/user-attachments/assets/16d13fd4-63df-4ccd-b28f-c89d19930522" />
 
 A Port of Project Raco for PC (Linux / Windows) <br />
