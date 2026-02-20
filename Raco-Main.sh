@@ -14,7 +14,7 @@
 
 set -e
 
-SCRIPT_VERSION="1.5-Enhanced"
+SCRIPT_VERSION="1.6"
 SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
@@ -178,6 +178,33 @@ detect_hardware() {
     if command -v nvidia-smi &>/dev/null; then NVIDIA_GPU_FOUND=1; fi
 }
 
+##########################################
+# NEW PERIPHERAL & STORAGE TWEAKS
+##########################################
+
+set_sata_alpm() {
+    local policy="$1"
+    for host in /sys/class/scsi_host/host*/link_power_management_policy; do
+        write_to_sysfs "$policy" "$host"
+    done
+}
+
+set_audio_powersave() {
+    local timeout="$1"
+    write_to_sysfs "$timeout" "/sys/module/snd_hda_intel/parameters/power_save"
+    if [ "$timeout" -eq 0 ]; then
+        write_to_sysfs "N" "/sys/module/snd_hda_intel/parameters/power_save_controller"
+    else
+        write_to_sysfs "Y" "/sys/module/snd_hda_intel/parameters/power_save_controller"
+    fi
+}
+
+set_usb_autosuspend() {
+    local state="$1" # "on" (disabled) or "auto" (enabled)
+    for dev in /sys/bus/usb/devices/*/power/control; do
+        write_to_sysfs "$state" "$dev"
+    done
+}
 
 ##########################################
 # CPU OPTIMIZATION
@@ -242,12 +269,10 @@ unlock_cpu_frequencies() {
 }
 
 ##########################################
-# KERNEL & SYSTEM TWEAKS (Ported from Raco.sh)
+# KERNEL & SYSTEM TWEAKS
 ##########################################
 
 apply_raco_common_tweaks() {
-    # Ported from performance_basic() in Raco.sh
-    
     # IO Block Tweaks
     for dir in /sys/block/*; do
         write_to_sysfs "0" "$dir/queue/iostats"
@@ -264,6 +289,8 @@ apply_raco_common_tweaks() {
     apply_sysctl "kernel.sched_nr_migrate" "32"
     apply_sysctl "kernel.sched_migration_cost_ns" "50000"
     apply_sysctl "kernel.split_lock_mitigate" "0"
+    
+    apply_sysctl "kernel.watchdog" "0"
 
     # VM Tweaks
     apply_sysctl "vm.page-cluster" "0"
@@ -307,6 +334,7 @@ set_laptop_mode_tweaks() {
         apply_sysctl "vm.vfs_cache_pressure" "100"
         apply_sysctl "kernel.nmi_watchdog" "1"
         apply_sysctl "kernel.split_lock_mitigate" "1"
+        apply_sysctl "kernel.watchdog" "1"
 
     else # powersave
         apply_sysctl "vm.laptop_mode" "5"
@@ -321,6 +349,8 @@ set_laptop_mode_tweaks() {
         apply_sysctl "vm.swappiness" "60"
         apply_sysctl "vm.dirty_writeback_centisecs" "1500"
         apply_sysctl "vm.vfs_cache_pressure" "100"
+        apply_sysctl "kernel.nmi_watchdog" "0"
+        apply_sysctl "kernel.watchdog" "0" # Off in powersave to save wakeups
     fi
 }
 
@@ -328,7 +358,20 @@ set_network_tweaks() {
     local mode="$1"
     modprobe sch_cake 2>/dev/null || true
 
-    if [ "$mode" == "performance" ] || [ "$mode" == "balanced" ]; then
+    if [ "$mode" == "performance" ]; then
+        apply_sysctl "net.core.default_qdisc" "cake"
+        apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
+        apply_sysctl "net.ipv4.tcp_fastopen" "3"
+        apply_sysctl "net.ipv4.tcp_window_scaling" "1"
+        apply_sysctl "net.ipv4.tcp_low_latency" "1"
+        apply_sysctl "net.ipv4.tcp_sack" "1"
+        
+        apply_sysctl "net.ipv4.tcp_rmem" "4096 87380 16777216"
+        apply_sysctl "net.ipv4.tcp_wmem" "4096 65536 16777216"
+        apply_sysctl "net.core.rmem_max" "16777216"
+        apply_sysctl "net.core.wmem_max" "16777216"
+
+    elif [ "$mode" == "balanced" ]; then
         apply_sysctl "net.core.default_qdisc" "cake"
         apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
         apply_sysctl "net.ipv4.tcp_fastopen" "3"
@@ -340,7 +383,6 @@ set_network_tweaks() {
         apply_sysctl "net.ipv4.tcp_low_latency" "0"
     fi
 }
-
 
 ##########################################
 # GPU OPTIMIZATION
@@ -395,6 +437,10 @@ set_performance() {
     lock_cpu_frequencies "max"
     set_laptop_mode_tweaks "performance"
     set_network_tweaks "performance"
+    
+    set_sata_alpm "max_performance"
+    set_audio_powersave 0
+    set_usb_autosuspend "on" # Disables autosuspend (keeps devices 'on')
 }
 
 set_balanced() {
@@ -405,6 +451,10 @@ set_balanced() {
     unlock_cpu_frequencies
     set_laptop_mode_tweaks "balanced"
     set_network_tweaks "balanced"
+    
+    set_sata_alpm "med_power_with_dipm"
+    set_audio_powersave 10 # 10 second idle timeout
+    set_usb_autosuspend "auto"
 }
 
 set_powersave() {
@@ -415,6 +465,10 @@ set_powersave() {
     lock_cpu_frequencies "min"
     set_laptop_mode_tweaks "powersave"
     set_network_tweaks "powersave"
+    
+    set_sata_alpm "min_power"
+    set_audio_powersave 1 # 1 second idle timeout
+    set_usb_autosuspend "auto"
 }
 
 
