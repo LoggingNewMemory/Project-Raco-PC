@@ -3,8 +3,6 @@
 set -e
 
 SCRIPT_VERSION="1.7"
-SCRIPT_URL="https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Main.sh"
-SCRIPT_PATH=$(readlink -f "$0")
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "❌ Error: This script must be run as root."
@@ -16,51 +14,6 @@ show_header() {
     echo "   Project Raco PC - Linux Power Optimizer"
     echo "   Version: $SCRIPT_VERSION"
     echo "========================================================"
-}
-
-check_for_updates() {
-    read -p "Check for script updates? [y/n]: " -n 1 -r
-    echo "" 
-
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        return
-    fi
-
-    local current_user
-    local current_group
-    current_user=$(stat -c '%U' "$SCRIPT_PATH")
-    current_group=$(stat -c '%G' "$SCRIPT_PATH")
-
-    local temp_file
-    temp_file=$(mktemp)
-    
-    if ! curl -sL "$SCRIPT_URL" -o "$temp_file"; then
-        echo "❌ Error: Failed to download updates."
-        rm -f "$temp_file"
-        exit 1
-    fi
-    
-    if cmp -s "$SCRIPT_PATH" "$temp_file"; then
-        rm -f "$temp_file"
-    else
-        diff --color=always -u "$SCRIPT_PATH" "$temp_file" || true
-        read -p "Apply these updates? [y/n]: " -n 1 -r
-        echo ""
-        
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if mv "$temp_file" "$SCRIPT_PATH"; then
-                chmod +x "$SCRIPT_PATH"
-                chown "${current_user}:${current_group}" "$SCRIPT_PATH"
-                exit 0
-            else
-                echo "❌ Error: Update failed."
-                rm -f "$temp_file"
-                exit 1
-            fi
-        else
-            rm -f "$temp_file"
-        fi
-    fi
 }
 
 write_to_sysfs() {
@@ -428,7 +381,6 @@ set_powersave() {
 
 if [ -z "$1" ]; then
     show_header
-    check_for_updates
     echo "Usage: sudo $0 <mode>"
     echo "  1: Performance Mode"
     echo "  2: Balanced Mode"

@@ -9,14 +9,10 @@
     performance, balanced use, or battery saving. It must be run with Administrator privileges.
 
 .PARAMETER Mode
-    Specifies the power mode to apply. If omitted, the script will check for updates.
+    Specifies the power mode to apply.
     1: Performance Mode
     2: Balanced Mode
     3: Powersave Mode
-
-.EXAMPLE
-    PS> ./Raco-Win.ps1
-    Checks for a new version of the script online.
 
 .EXAMPLE
     PS> ./Raco-Win.ps1 -Mode 2
@@ -34,44 +30,9 @@ param (
 # SCRIPT INITIALIZATION
 #==============================================================================
 
-$scriptUrl = "https://raw.githubusercontent.com/LoggingNewMemory/Project-Raco-PC/main/Raco-Win.ps1"
-$scriptPath = $MyInvocation.MyCommand.Path
-
 # Check for Administrator privileges
 if (-Not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Error "Error: This script must be run as Administrator." -ErrorAction Stop
-}
-
-function Check-ForUpdates {
-    $choice = Read-Host "Check for script updates? [y/n]"
-    if ($choice -ne 'y') {
-        return
-    }
-
-    Write-Host "Checking for updates..."
-    try {
-        # Download the latest script content
-        $latestScriptContent = Invoke-WebRequest -Uri $scriptUrl -UseBasicParsing | Select-Object -ExpandProperty Content
-        
-        # Get current script content
-        $currentScriptContent = Get-Content -Path $scriptPath -Raw
-
-        # Compare them
-        if ($latestScriptContent -eq $currentScriptContent) {
-            Write-Host "You are already using the latest version."
-        }
-        else {
-            Write-Host "New version found! Updating..."
-            # Overwrite the current script with the new content
-            Set-Content -Path $scriptPath -Value $latestScriptContent -Force
-            Write-Host "Script updated successfully. Please re-run the script."
-            Exit
-        }
-    }
-    catch {
-        Write-Warning "Error: Failed to check for updates. Please check your internet connection."
-        Write-Warning $_.Exception.Message
-    }
 }
 
 #==============================================================================
@@ -202,10 +163,8 @@ function Set-Powersave {
 # MAIN EXECUTION LOGIC
 #==============================================================================
 
-# Check if a mode was provided. If not, check for updates.
+# Check if a mode was provided. If not, output usage instructions.
 if (-not $PSBoundParameters.ContainsKey('Mode')) {
-    Check-ForUpdates
-    # Show usage if user did not update
     Write-Host "`nUsage: $PSCommandPath -Mode <1|2|3>"
     Write-Host "  1: Performance Mode"
     Write-Host "  2: Balanced Mode"
