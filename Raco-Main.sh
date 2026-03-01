@@ -2,7 +2,7 @@
 
 set -e
 
-SCRIPT_VERSION="1.7"
+SCRIPT_VERSION="2.0"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "❌ Error: This script must be run as root."
@@ -46,7 +46,6 @@ sync_ppd() {
     local target_mode="$1"
     
     if command -v powerprofilesctl &>/dev/null && systemctl is-active --quiet power-profiles-daemon; then
-        
         local ppd_profile=""
         case "$target_mode" in
             "performance") ppd_profile="performance" ;;
@@ -63,7 +62,7 @@ sync_ppd() {
 }
 
 stop_conflicts() {
-    for service in tlp auto-cpufreq thermald; do
+    for service in tlp auto-cpufreq thermald tuned; do
         if systemctl is-active --quiet "$service"; then
             systemctl stop "$service" 2>/dev/null || true
         fi
@@ -135,6 +134,9 @@ set_cpu_boost() {
     if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
         write_to_sysfs "$state" "/sys/devices/system/cpu/cpufreq/boost"
     fi
+    if [ -w /sys/devices/system/cpu/amd_pstate/status ]; then
+        write_to_sysfs "$([ "$state" -eq 1 ] && echo "active" || echo "passive")" "/sys/devices/system/cpu/amd_pstate/status"
+    fi
 }
 
 lock_cpu_frequencies() {
@@ -168,38 +170,52 @@ unlock_cpu_frequencies() {
     done
 }
 
-apply_raco_common_tweaks() {
-    for dir in /sys/block/*; do
-        write_to_sysfs "0" "$dir/queue/iostats"
-        write_to_sysfs "0" "$dir/queue/add_random"
-        write_to_sysfs "32" "$dir/queue/read_ahead_kb"
-        write_to_sysfs "32" "$dir/queue/nr_requests"
+set_io_scheduler() {
+    local mode="$1"
+    for dev in /sys/block/nvme* /sys/block/sd*; do
+        if [ -d "$dev" ]; then
+            local sched_file="$dev/queue/scheduler"
+            if [ "$mode" == "performance" ]; then
+                write_to_sysfs "none" "$sched_file"
+                write_to_sysfs "0" "$dev/queue/add_random"
+                write_to_sysfs "0" "$dev/queue/iostats"
+                write_to_sysfs "256" "$dev/queue/nr_requests"
+            elif [ "$mode" == "balanced" ]; then
+                if [[ "$dev" == *"nvme"* ]]; then
+                    write_to_sysfs "none" "$sched_file"
+                else
+                    write_to_sysfs "mq-deadline" "$sched_file"
+                fi
+                write_to_sysfs "1" "$dev/queue/add_random"
+                write_to_sysfs "1" "$dev/queue/iostats"
+                write_to_sysfs "64" "$dev/queue/nr_requests"
+            fi
+        fi
     done
-
-    apply_sysctl "kernel.perf_cpu_time_max_percent" "3"
-    apply_sysctl "kernel.sched_schedstats" "0"
-    apply_sysctl "kernel.sched_autogroup_enabled" "0"
-    apply_sysctl "kernel.sched_child_runs_first" "1"
-    apply_sysctl "kernel.sched_nr_migrate" "32"
-    apply_sysctl "kernel.sched_migration_cost_ns" "50000"
-    apply_sysctl "kernel.split_lock_mitigate" "0"
-    apply_sysctl "kernel.watchdog" "0"
-    apply_sysctl "vm.page-cluster" "0"
-    apply_sysctl "vm.stat_interval" "15"
-    apply_sysctl "vm.compaction_proactiveness" "0"
-    
-    if [ -d "/sys/kernel/debug/sched" ]; then
-        echo "NEXT_BUDDY" > /sys/kernel/debug/sched_features 2>/dev/null || true
-        echo "NO_TTWU_QUEUE" > /sys/kernel/debug/sched_features 2>/dev/null || true
-    fi
 }
 
-set_laptop_mode_tweaks() {
+set_system_tweaks() {
     local mode="$1"
 
     if [ "$mode" == "performance" ]; then
+        # Maximize throughput, minimize latency
         apply_sysctl "vm.laptop_mode" "0" 
+        apply_sysctl "vm.swappiness" "10"
+        apply_sysctl "vm.vfs_cache_pressure" "50"
+        apply_sysctl "vm.dirty_ratio" "80"
+        apply_sysctl "vm.dirty_background_ratio" "50"
+        apply_sysctl "vm.max_map_count" "2147483642"
+        apply_sysctl "vm.compaction_proactiveness" "0"
+        apply_sysctl "vm.stat_interval" "15"
+        apply_sysctl "kernel.nmi_watchdog" "0"
+        apply_sysctl "kernel.watchdog" "0"
+        apply_sysctl "kernel.split_lock_mitigate" "0"
+        apply_sysctl "kernel.sched_autogroup_enabled" "0"
+        apply_sysctl "kernel.sched_child_runs_first" "1"
+
         write_to_sysfs "performance" "/sys/module/pcie_aspm/parameters/policy"
+        write_to_sysfs "always" "/sys/kernel/mm/transparent_hugepage/enabled"
+        write_to_sysfs "never" "/sys/kernel/mm/transparent_hugepage/defrag"
         
         for iface in $(ls /sys/class/net | grep -E 'wlan|wlp|wlx'); do
             if command -v iw &>/dev/null; then
@@ -207,40 +223,43 @@ set_laptop_mode_tweaks() {
             fi
         done
 
-        apply_sysctl "vm.swappiness" "10"
-        apply_sysctl "vm.vfs_cache_pressure" "50"
-        apply_sysctl "vm.dirty_ratio" "40"
-        apply_sysctl "vm.dirty_background_ratio" "10"
-        apply_sysctl "vm.max_map_count" "2147483642"
-        apply_sysctl "kernel.nmi_watchdog" "0"
-        
-        apply_raco_common_tweaks
-
     elif [ "$mode" == "balanced" ]; then
+        # Revert to stable, balanced OS defaults
         apply_sysctl "vm.laptop_mode" "2" 
-        write_to_sysfs "default" "/sys/module/pcie_aspm/parameters/policy"
-        
         apply_sysctl "vm.swappiness" "60"
         apply_sysctl "vm.vfs_cache_pressure" "100"
+        apply_sysctl "vm.dirty_ratio" "20"
+        apply_sysctl "vm.dirty_background_ratio" "10"
+        apply_sysctl "vm.max_map_count" "262144"
+        apply_sysctl "vm.compaction_proactiveness" "20"
+        apply_sysctl "vm.stat_interval" "1"
         apply_sysctl "kernel.nmi_watchdog" "1"
-        apply_sysctl "kernel.split_lock_mitigate" "1"
         apply_sysctl "kernel.watchdog" "1"
+        apply_sysctl "kernel.split_lock_mitigate" "1"
+        apply_sysctl "kernel.sched_autogroup_enabled" "1"
+        apply_sysctl "kernel.sched_child_runs_first" "0"
+
+        write_to_sysfs "default" "/sys/module/pcie_aspm/parameters/policy"
+        write_to_sysfs "madvise" "/sys/kernel/mm/transparent_hugepage/enabled"
+        write_to_sysfs "madvise" "/sys/kernel/mm/transparent_hugepage/defrag"
 
     else
+        # Maximum battery savings
         apply_sysctl "vm.laptop_mode" "5"
+        apply_sysctl "vm.swappiness" "60"
+        apply_sysctl "vm.dirty_writeback_centisecs" "1500"
+        apply_sysctl "vm.vfs_cache_pressure" "100"
+        apply_sysctl "kernel.nmi_watchdog" "0"
+        apply_sysctl "kernel.watchdog" "0"
+        
         write_to_sysfs "powersave" "/sys/module/pcie_aspm/parameters/policy"
+        write_to_sysfs "madvise" "/sys/kernel/mm/transparent_hugepage/enabled"
         
         for iface in $(ls /sys/class/net | grep -E 'wlan|wlp|wlx'); do
             if command -v iw &>/dev/null; then
                 iw dev "$iface" set power_save on 2>/dev/null || true
             fi
         done
-        
-        apply_sysctl "vm.swappiness" "60"
-        apply_sysctl "vm.dirty_writeback_centisecs" "1500"
-        apply_sysctl "vm.vfs_cache_pressure" "100"
-        apply_sysctl "kernel.nmi_watchdog" "0"
-        apply_sysctl "kernel.watchdog" "0"
     fi
 }
 
@@ -252,21 +271,14 @@ set_network_tweaks() {
         apply_sysctl "net.core.default_qdisc" "cake"
         apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
         apply_sysctl "net.ipv4.tcp_fastopen" "3"
-        apply_sysctl "net.ipv4.tcp_window_scaling" "1"
         apply_sysctl "net.ipv4.tcp_low_latency" "1"
-        apply_sysctl "net.ipv4.tcp_sack" "1"
         apply_sysctl "net.ipv4.tcp_rmem" "4096 87380 16777216"
         apply_sysctl "net.ipv4.tcp_wmem" "4096 65536 16777216"
-        apply_sysctl "net.core.rmem_max" "16777216"
-        apply_sysctl "net.core.wmem_max" "16777216"
-
     elif [ "$mode" == "balanced" ]; then
-        apply_sysctl "net.core.default_qdisc" "cake"
-        apply_sysctl "net.ipv4.tcp_congestion_control" "bbr"
-        apply_sysctl "net.ipv4.tcp_fastopen" "3"
-        apply_sysctl "net.ipv4.tcp_window_scaling" "1"
-        apply_sysctl "net.ipv4.tcp_low_latency" "1"
-        apply_sysctl "net.ipv4.tcp_sack" "1"
+        apply_sysctl "net.core.default_qdisc" "fq_codel"
+        apply_sysctl "net.ipv4.tcp_congestion_control" "cubic"
+        apply_sysctl "net.ipv4.tcp_fastopen" "1"
+        apply_sysctl "net.ipv4.tcp_low_latency" "0"
     else
         apply_sysctl "net.ipv4.tcp_congestion_control" "cubic"
         apply_sysctl "net.ipv4.tcp_low_latency" "0"
@@ -346,7 +358,8 @@ set_performance() {
     set_cpu_epp "performance"
     set_cpu_boost 1
     lock_cpu_frequencies "max"
-    set_laptop_mode_tweaks "performance"
+    set_io_scheduler "performance"
+    set_system_tweaks "performance"
     set_network_tweaks "performance"
     set_sata_alpm "max_performance"
     set_audio_powersave 0
@@ -359,7 +372,8 @@ set_balanced() {
     set_cpu_epp "balance_performance"
     set_cpu_boost 1
     unlock_cpu_frequencies
-    set_laptop_mode_tweaks "balanced"
+    set_io_scheduler "balanced"
+    set_system_tweaks "balanced"
     set_network_tweaks "balanced"
     set_sata_alpm "med_power_with_dipm"
     set_audio_powersave 10 
@@ -372,7 +386,8 @@ set_powersave() {
     set_cpu_epp "power"
     set_cpu_boost 0
     lock_cpu_frequencies "min"
-    set_laptop_mode_tweaks "powersave"
+    set_io_scheduler "balanced"
+    set_system_tweaks "powersave"
     set_network_tweaks "powersave"
     set_sata_alpm "min_power"
     set_audio_powersave 1 
@@ -396,19 +411,19 @@ case $MODE in
     1)
         set_performance
         optimize_gpu "performance"
-        echo "✅ Performance locked. Battery saving disabled. 🔥"
+        echo "✅ Extreme Performance locked. Hardware unleashed. 🔥"
         send_notification "Project Raco PC" "Performance Mode Active"
         ;;
     2)
         set_balanced
         optimize_gpu "balanced"
-        echo "✅ Balanced mode activated. ⚖️"
+        echo "✅ Balanced mode activated. OS Defaults restored. ⚖️"
         send_notification "Project Raco PC" "Balanced Mode Active"
         ;;
     3)
         set_powersave
         optimize_gpu "powersave"
-        echo "✅ Powersave mode activated. 🔋"
+        echo "✅ Powersave mode activated. Hardware throttled. 🔋"
         send_notification "Project Raco PC" "Powersave Mode Active"
         ;;
     *)
@@ -418,7 +433,7 @@ case $MODE in
 esac
 
 echo "  CPU Vendor: $CPU_VENDOR"
-echo "  Laptop Mode: $(sysctl -n vm.laptop_mode)"
+echo "  IO Scheduler (sda): $(cat /sys/block/sda/queue/scheduler 2>/dev/null || echo N/A)"
 echo "  ASPM Policy: $(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || echo N/A)"
 if systemctl is-active --quiet power-profiles-daemon; then
     echo "  PPD Status: Active ($(powerprofilesctl get))"
