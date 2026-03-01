@@ -1,4 +1,4 @@
-<img width="1280" height="720" alt="Banner" src="https://github.com/user-attachments/assets/16d13fd4-63df-4ccd-b28f-c89d19930522" />
+<img width="1280" height="720" alt="Banner" src="https://github.com/user-attachments/assets/df5d5cd6-1828-4995-a54f-f9dfbbd7e070" />
 
 A Port of Project Raco for PC (Linux / Windows) <br />
 
